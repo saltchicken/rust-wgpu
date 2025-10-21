@@ -1,0 +1,13 @@
+[package]
+name = "rust-gl"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+bytemuck = { version = "1.24", features = ["derive"] }
+env_logger = "0.11.8"
+log = "0.4"
+pollster = "0.4"
+wgpu = "27.0.0"
+winit = "0.30"
