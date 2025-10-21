@@ -1,13 +1,18 @@
-use std::{iter, sync::Arc};
+use std::{iter, sync::Arc, time::Instant};
 use wgpu::util::DeviceExt;
 use winit::{event_loop::ActiveEventLoop, keyboard::KeyCode, window::Window};
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct TimeUniform {
+    time: f32,
+}
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vertex {
     position: [f32; 2],
 }
-
 impl Vertex {
     pub fn desc() -> wgpu::VertexBufferLayout<'static> {
         use std::mem;
@@ -22,7 +27,6 @@ impl Vertex {
         }
     }
 }
-
 const VERTICES: &[Vertex] = &[
     Vertex {
         position: [-1.0, -1.0],
@@ -37,12 +41,10 @@ const VERTICES: &[Vertex] = &[
         position: [1.0, -1.0],
     }, // D
 ];
-
 const INDICES: &[u16] = &[
     0, 1, 2, // Triangle 1 (A, B, C)
     0, 2, 3, // Triangle 2 (A, C, D)
 ];
-
 pub struct State {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
@@ -54,8 +56,11 @@ pub struct State {
     index_buffer: wgpu::Buffer,
     num_indices: u32,
     window: Arc<Window>,
+    start_time: Instant,
+    time_uniform: TimeUniform,
+    time_buffer: wgpu::Buffer,
+    time_bind_group: wgpu::BindGroup,
 }
-
 impl State {
     pub async fn new(window: Arc<Window>) -> anyhow::Result<State> {
         let size = window.inner_size();
@@ -100,10 +105,41 @@ impl State {
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
-
         if size.width > 0 && size.height > 0 {
             surface.configure(&device, &config);
         }
+
+        let start_time = Instant::now();
+        let time_uniform = TimeUniform { time: 0.0 };
+        let time_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Time Buffer"),
+            contents: bytemuck::cast_slice(&[time_uniform]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let time_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+                label: Some("time_bind_group_layout"),
+            });
+
+        let time_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &time_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: time_buffer.as_entire_binding(),
+            }],
+            label: Some("time_bind_group"),
+        });
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Shader"),
@@ -112,7 +148,7 @@ impl State {
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[],
+                bind_group_layouts: &[&time_bind_group_layout], // ‼️ Use the new layout
                 push_constant_ranges: &[],
             });
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -174,6 +210,10 @@ impl State {
             index_buffer,
             num_indices,
             window,
+            start_time,
+            time_uniform,
+            time_buffer,
+            time_bind_group,
         })
     }
     pub fn window(&self) -> &Window {
@@ -196,6 +236,15 @@ impl State {
         if !self.is_surface_configured {
             return Ok(());
         }
+
+        // ‼️ NEW: Update the time uniform before rendering
+        self.time_uniform.time = self.start_time.elapsed().as_secs_f32();
+        self.queue.write_buffer(
+            &self.time_buffer,
+            0,
+            bytemuck::cast_slice(&[self.time_uniform]),
+        );
+
         let output = self.surface.get_current_texture()?;
         let view = output
             .texture
@@ -222,6 +271,9 @@ impl State {
                 timestamp_writes: None,
             });
             render_pass.set_pipeline(&self.render_pipeline);
+
+            render_pass.set_bind_group(0, &self.time_bind_group, &[]);
+
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
             render_pass.draw_indexed(0..self.num_indices, 0, 0..1);

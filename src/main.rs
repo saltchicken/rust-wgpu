@@ -22,6 +22,12 @@ impl App {
 }
 
 impl ApplicationHandler for App {
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(state) = &self.state {
+            state.window().request_redraw();
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let window_attributes = Window::default_attributes().with_title("Native WGPU App");
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
@@ -64,9 +70,7 @@ impl ApplicationHandler for App {
                     },
                 ..
             } => state.handle_key(event_loop, code, key_state.is_pressed()),
-            _ => {
-                state.window().request_redraw();
-            }
+            _ => {}
         }
     }
 }
