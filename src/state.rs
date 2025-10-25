@@ -2,6 +2,8 @@ use std::{iter, sync::Arc, time::Instant};
 use wgpu::util::DeviceExt;
 use winit::{event_loop::ActiveEventLoop, keyboard::KeyCode, window::Window};
 
+use proclink::ShmemReader;
+
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct TimeUniform {
@@ -63,6 +65,7 @@ pub struct State {
     time_bind_group: wgpu::BindGroup,
     last_update_time: Instant,
     frame_count: u32,
+    reader: ShmemReader,
 }
 impl State {
     pub async fn new(window: Arc<Window>) -> anyhow::Result<State> {
@@ -209,6 +212,8 @@ impl State {
             usage: wgpu::BufferUsages::INDEX,
         });
         let num_indices = INDICES.len() as u32;
+        let reader = ShmemReader::new("my_synchronized_shmem")
+            .expect("Failed to open shared memory. Is the audio_monitor running?");
 
         Ok(Self {
             surface,
@@ -227,6 +232,7 @@ impl State {
             time_bind_group,
             last_update_time: Instant::now(),
             frame_count: 0,
+            reader,
         })
     }
     pub fn window(&self) -> &Window {
@@ -248,6 +254,18 @@ impl State {
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         if !self.is_surface_configured {
             return Ok(());
+        }
+
+        match self.reader.read() {
+            Ok(Some(data)) => {
+                println!("{:?}", data.len());
+            }
+            Ok(None) => {
+                // println!("No data");
+            }
+            Err(e) => {
+                println!("Error: {}", e);
+            }
         }
 
         // ‼️ NEW: Update the time uniform before rendering
