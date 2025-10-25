@@ -13,6 +13,7 @@ struct TimeUniform {
 pub struct Vertex {
     position: [f32; 2],
 }
+
 impl Vertex {
     pub fn desc() -> wgpu::VertexBufferLayout<'static> {
         use std::mem;
@@ -60,6 +61,8 @@ pub struct State {
     time_uniform: TimeUniform,
     time_buffer: wgpu::Buffer,
     time_bind_group: wgpu::BindGroup,
+    last_update_time: Instant,
+    frame_count: u32,
 }
 impl State {
     pub async fn new(window: Arc<Window>) -> anyhow::Result<State> {
@@ -95,12 +98,19 @@ impl State {
             .copied()
             .find(|f| f.is_srgb())
             .unwrap_or(surface_caps.formats[0]);
+        let present_mode = surface_caps
+            .present_modes
+            .iter()
+            .copied()
+            .find(|mode| *mode == wgpu::PresentMode::Fifo) // ‼️ Look for VSync
+            .unwrap_or(surface_caps.present_modes[0]); // ‼️ Fallback to the default
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
             width: size.width,
             height: size.height,
-            present_mode: surface_caps.present_modes[0],
+            present_mode,
+            // present_mode: surface_caps.present_modes[0],
             alpha_mode: surface_caps.alpha_modes[0],
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
@@ -199,6 +209,7 @@ impl State {
             usage: wgpu::BufferUsages::INDEX,
         });
         let num_indices = INDICES.len() as u32;
+
         Ok(Self {
             surface,
             device,
@@ -214,6 +225,8 @@ impl State {
             time_uniform,
             time_buffer,
             time_bind_group,
+            last_update_time: Instant::now(),
+            frame_count: 0,
         })
     }
     pub fn window(&self) -> &Window {
@@ -280,6 +293,20 @@ impl State {
         }
         self.queue.submit(iter::once(encoder.finish()));
         output.present();
+
+        self.frame_count += 1;
+        let now = Instant::now();
+        let delta = now.duration_since(self.last_update_time);
+
+        // Update and log FPS every 1 second
+        if delta.as_secs_f64() >= 1.0 {
+            let fps = self.frame_count as f64 / delta.as_secs_f64();
+            println!("FPS: {:.2}", fps);
+
+            // Reset for the next interval
+            self.frame_count = 0;
+            self.last_update_time = now;
+        }
         Ok(())
     }
 }
