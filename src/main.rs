@@ -15,7 +15,6 @@ struct App {
 }
 
 impl App {
-    // ‼️ App::new simplified, takes no arguments
     pub fn new() -> Self {
         Self { state: None }
     }
