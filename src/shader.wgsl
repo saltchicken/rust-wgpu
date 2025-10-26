@@ -1,10 +1,8 @@
 struct Time {
     time: f32,
 }
-
 @group(0) @binding(0)
 var<uniform> u_time: Time;
-
 struct VertexInput {
     @location(0) position: vec2<f32>,
 }
@@ -22,5 +20,5 @@ fn vs_main(
 @fragment
 fn fs_main() -> @location(0) vec4<f32> {
     let green = (sin(u_time.time * 2.0) + 1.0) * 0.5;
-    return vec4<f32>(0.0, green, 1.0, 1.0);
+    return vec4<f32>(0.0, 1.0, 1.0, 1.0);
 }
