@@ -10,7 +10,7 @@ struct TimeUniform {
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct Vertex {
+struct Vertex {
     position: [f32; 2],
 }
 
@@ -28,24 +28,7 @@ impl Vertex {
         }
     }
 }
-const VERTICES: &[Vertex] = &[
-    Vertex {
-        position: [-1.0, -1.0],
-    }, // A
-    Vertex {
-        position: [-1.0, 1.0],
-    }, // B
-    Vertex {
-        position: [1.0, 1.0],
-    }, // C
-    Vertex {
-        position: [1.0, -1.0],
-    }, // D
-];
-const INDICES: &[u16] = &[
-    0, 1, 2, // Triangle 1 (A, B, C)
-    0, 2, 3, // Triangle 2 (A, C, D)
-];
+
 pub struct State {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
@@ -54,8 +37,10 @@ pub struct State {
     is_surface_configured: bool,
     render_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
-    index_buffer: wgpu::Buffer,
-    num_indices: u32,
+    vertices: Vec<Vertex>,
+    num_vertices: u32,
+    // index_buffer: wgpu::Buffer,
+    // num_indices: u32,
     window: Arc<Window>,
     start_time: Instant,
     time_uniform: TimeUniform,
@@ -181,7 +166,7 @@ impl State {
                 compilation_options: Default::default(),
             }),
             primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
+                topology: wgpu::PrimitiveTopology::LineStrip,
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
                 cull_mode: None,
@@ -198,17 +183,32 @@ impl State {
             multiview: None,
             cache: None,
         });
+        let vertices: Vec<Vertex> = vec![
+            Vertex {
+                position: [-1.0, 0.0],
+            },
+            Vertex {
+                position: [-0.5, 0.5],
+            },
+            Vertex {
+                position: [0.5, -0.5],
+            },
+            Vertex {
+                position: [1.0, 0.0],
+            },
+        ];
+        let num_vertices = vertices.len() as u32;
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Vertex Buffer"),
-            contents: bytemuck::cast_slice(VERTICES),
-            usage: wgpu::BufferUsages::VERTEX,
+            contents: bytemuck::cast_slice(&vertices),
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Index Buffer"),
-            contents: bytemuck::cast_slice(INDICES),
-            usage: wgpu::BufferUsages::INDEX,
-        });
-        let num_indices = INDICES.len() as u32;
+        // let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        //     label: Some("Index Buffer"),
+        //     contents: bytemuck::cast_slice(INDICES),
+        //     usage: wgpu::BufferUsages::INDEX,
+        // });
+        // let num_indices = INDICES.len() as u32;
 
         Ok(Self {
             surface,
@@ -218,8 +218,10 @@ impl State {
             is_surface_configured: size.width > 0 && size.height > 0,
             render_pipeline,
             vertex_buffer,
-            index_buffer,
-            num_indices,
+            vertices,
+            num_vertices,
+            // index_buffer,
+            // num_indices,
             window,
             start_time,
             time_uniform,
@@ -250,8 +252,14 @@ impl State {
             return Ok(());
         }
 
-        // ‼️ NEW: Update the time uniform before rendering
+        // Update the time uniform before rendering
         self.time_uniform.time = self.start_time.elapsed().as_secs_f32();
+        let time = self.time_uniform.time;
+        self.vertices[1].position[1] = 0.5 * time.sin();
+        self.vertices[2].position[1] = -0.5 * time.cos();
+        self.queue
+            .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&self.vertices));
+
         self.queue.write_buffer(
             &self.time_buffer,
             0,
@@ -288,8 +296,9 @@ impl State {
             render_pass.set_bind_group(0, &self.time_bind_group, &[]);
 
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
+            // render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            // render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
+            render_pass.draw(0..self.num_vertices, 0..1);
         }
         self.queue.submit(iter::once(encoder.finish()));
         output.present();
