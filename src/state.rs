@@ -116,6 +116,25 @@ impl State {
             .find(|mode| *mode == wgpu::PresentMode::Fifo)
             .unwrap_or(surface_caps.present_modes[0]);
 
+        let desired_modes = [
+            wgpu::CompositeAlphaMode::PostMultiplied,
+            wgpu::CompositeAlphaMode::Auto,
+            wgpu::CompositeAlphaMode::Inherit,
+        ];
+        let alpha_mode = desired_modes
+            .into_iter()
+            .find(|mode| surface_caps.alpha_modes.contains(mode))
+            .unwrap_or_else(|| {
+                surface_caps
+                    .alpha_modes
+                    .iter()
+                    .copied()
+                    .find(|mode| *mode != wgpu::CompositeAlphaMode::Opaque)
+                    .unwrap_or(surface_caps.alpha_modes[0])
+            });
+        if alpha_mode == wgpu::CompositeAlphaMode::Opaque {
+            log::warn!("Surface does not support transparency, falling back to Opaque.");
+        }
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
@@ -123,7 +142,7 @@ impl State {
             height: size.height,
             present_mode,
             // present_mode: surface_caps.present_modes[0],
-            alpha_mode: surface_caps.alpha_modes[0],
+            alpha_mode,
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
@@ -323,7 +342,7 @@ impl State {
                     // Resolve to the swapchain texture view
                     resolve_target: Some(&view),
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         // Discard the multisampled texture's contents after resolving
                         store: wgpu::StoreOp::Discard,
                     },

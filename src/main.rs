@@ -28,7 +28,9 @@ impl ApplicationHandler for App {
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let window_attributes = Window::default_attributes().with_title("Native WGPU App");
+        let window_attributes = Window::default_attributes()
+            .with_title("Native WGPU App")
+            .with_transparent(true);
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
 
         self.state = Some(pollster::block_on(State::new(window)).unwrap());
