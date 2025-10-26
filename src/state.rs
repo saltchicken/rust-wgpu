@@ -29,6 +29,27 @@ impl Vertex {
     }
 }
 
+fn create_vertices(num_vertices: u32) -> Vec<Vertex> {
+    // TODO: Proper error handling when not enough vertices
+    if num_vertices < 2 {
+        return Vec::new(); // Need at least 2 vertices to form a line
+    }
+
+    let mut vertices = Vec::with_capacity(num_vertices as usize);
+    // ‼️ Calculate the horizontal distance (step) between each vertex
+    // ‼️ We span from -1.0 to 1.0 (a total distance of 2.0)
+    let step = 2.0 / (num_vertices as f32 - 1.0);
+
+    for i in 0..num_vertices {
+        // ‼️ Calculate the x-coordinate for the current vertex
+        let x = -1.0 + (i as f32 * step);
+        // ‼️ Initialize y-coordinate to 0.0
+        vertices.push(Vertex { position: [x, 0.0] });
+    }
+
+    vertices
+}
+
 // Helper function to create the MSAA texture view
 fn create_msaa_view(
     device: &wgpu::Device,
@@ -219,7 +240,7 @@ impl State {
                 compilation_options: Default::default(),
             }),
             primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::LineStrip,
+                topology: wgpu::PrimitiveTopology::PointList,
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
                 cull_mode: None,
@@ -237,23 +258,7 @@ impl State {
             cache: None,
         });
 
-        let vertices: Vec<Vertex> = vec![
-            Vertex {
-                position: [-1.0, 0.0],
-            },
-            Vertex {
-                position: [-0.5, 0.5],
-            },
-            Vertex {
-                position: [0.0, 1.0],
-            },
-            Vertex {
-                position: [0.5, -0.5],
-            },
-            Vertex {
-                position: [1.0, 0.0],
-            },
-        ];
+        let vertices = create_vertices(200);
         let num_vertices = vertices.len() as u32;
 
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -314,9 +319,10 @@ impl State {
         self.time_uniform.time = self.start_time.elapsed().as_secs_f32();
         let time = self.time_uniform.time;
 
-        self.vertices[1].position[1] = 0.5 * f32::sin(0.5 * time);
-        self.vertices[2].position[1] = 1.0 * f32::sin(1.5 * time);
-        self.vertices[3].position[1] = 1.0 * f32::cos(0.5 * time);
+        for vertex in self.vertices.iter_mut() {
+            let x = vertex.position[0];
+            vertex.position[1] = 0.5 * f32::sin(x * 5.0 + time * 2.0);
+        }
 
         self.queue
             .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&self.vertices));
