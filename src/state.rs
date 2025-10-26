@@ -271,7 +271,7 @@ impl State {
         // ‼️ --- Setup for Feedback Effect ---
 
         // ‼️ 1. Create denoise uniform
-        let denoise_factor = 0.1;
+        let denoise_factor = 0.2;
         let denoise_uniform = DenoiseUniform {
             factor: denoise_factor,
         };
