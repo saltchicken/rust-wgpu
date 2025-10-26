@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use winit::{
     application::ApplicationHandler,
+    dpi::LogicalSize,
     event::*,
     event_loop::{ActiveEventLoop, EventLoop},
     keyboard::PhysicalKey,
@@ -28,8 +29,10 @@ impl ApplicationHandler for App {
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        let window_size = LogicalSize::new(5120, 1440);
         let window_attributes = Window::default_attributes()
             .with_title("Native WGPU App")
+            .with_inner_size(window_size)
             .with_transparent(true);
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
 
