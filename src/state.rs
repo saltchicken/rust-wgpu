@@ -4,8 +4,31 @@ use winit::{event_loop::ActiveEventLoop, keyboard::KeyCode, window::Window};
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct TimeUniform {
+struct GlobalsUniform {
+    resolution: [f32; 2],
     time: f32,
+    point_size: f32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct InstanceRaw {
+    position: [f32; 2],
+}
+
+impl InstanceRaw {
+    pub fn desc() -> wgpu::VertexBufferLayout<'static> {
+        use std::mem;
+        wgpu::VertexBufferLayout {
+            array_stride: mem::size_of::<InstanceRaw>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &[wgpu::VertexAttribute {
+                offset: 0,
+                shader_location: 0, // This is for the instance buffer
+                format: wgpu::VertexFormat::Float32x2,
+            }],
+        }
+    }
 }
 
 #[repr(C)]
@@ -20,14 +43,31 @@ impl Vertex {
         wgpu::VertexBufferLayout {
             array_stride: mem::size_of::<Vertex>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[wgpu::VertexAttribute {
-                offset: 0,
-                shader_location: 0,
-                format: wgpu::VertexFormat::Float32x2,
-            }],
+            attributes: &[],
         }
     }
 }
+
+const QUAD_VERTICES: &[Vertex] = &[
+    Vertex {
+        position: [-0.5, -0.5],
+    },
+    Vertex {
+        position: [0.5, -0.5],
+    },
+    Vertex {
+        position: [-0.5, 0.5],
+    },
+    Vertex {
+        position: [-0.5, 0.5],
+    },
+    Vertex {
+        position: [0.5, -0.5],
+    },
+    Vertex {
+        position: [0.5, 0.5],
+    },
+];
 
 // Helper function to create the MSAA texture view
 fn create_msaa_view(
@@ -59,14 +99,15 @@ pub struct State {
     config: wgpu::SurfaceConfiguration,
     is_surface_configured: bool,
     render_pipeline: wgpu::RenderPipeline,
-    vertex_buffer: wgpu::Buffer,
-    vertices: Vec<Vertex>,
-    num_vertices: u32,
+    quad_vertex_buffer: wgpu::Buffer,
+    instance_buffer: wgpu::Buffer,
+    instances: Vec<InstanceRaw>,
+    num_instances: u32,
     window: Arc<Window>,
     start_time: Instant,
-    time_uniform: TimeUniform,
-    time_buffer: wgpu::Buffer,
-    time_bind_group: wgpu::BindGroup,
+    globals_uniform: GlobalsUniform,
+    globals_buffer: wgpu::Buffer,
+    globals_bind_group: wgpu::BindGroup,
     last_update_time: Instant,
     frame_count: u32,
     msaa_sample_count: u32,
@@ -80,7 +121,6 @@ impl State {
             backends: wgpu::Backends::PRIMARY,
             ..Default::default()
         });
-
         let surface = instance.create_surface(window.clone()).unwrap();
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -90,6 +130,7 @@ impl State {
             })
             .await
             .unwrap();
+
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
@@ -141,33 +182,37 @@ impl State {
             width: size.width,
             height: size.height,
             present_mode,
-            // present_mode: surface_caps.present_modes[0],
             alpha_mode,
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
-
         if size.width > 0 && size.height > 0 {
             surface.configure(&device, &config);
         }
 
-        // Set sample count and create the initial MSAA view
         let msaa_sample_count = 4;
         let msaa_view = create_msaa_view(&device, &config, msaa_sample_count);
 
         let start_time = Instant::now();
-        let time_uniform = TimeUniform { time: 0.0 };
-        let time_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Time Buffer"),
-            contents: bytemuck::cast_slice(&[time_uniform]),
+        let point_size = 10.0;
+
+        let globals_uniform = GlobalsUniform {
+            time: 0.0,
+            resolution: [size.width as f32, size.height as f32],
+            point_size,
+        };
+
+        let globals_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Globals Buffer"),
+            contents: bytemuck::cast_slice(&[globals_uniform]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let time_bind_group_layout =
+        let globals_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -175,16 +220,16 @@ impl State {
                     },
                     count: None,
                 }],
-                label: Some("time_bind_group_layout"),
+                label: Some("globals_bind_group_layout"),
             });
 
-        let time_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &time_bind_group_layout,
+        let globals_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &globals_bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
-                resource: time_buffer.as_entire_binding(),
+                resource: globals_buffer.as_entire_binding(),
             }],
-            label: Some("time_bind_group"),
+            label: Some("globals_bind_group"),
         });
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -195,7 +240,7 @@ impl State {
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[&time_bind_group_layout],
+                bind_group_layouts: &[&globals_bind_group_layout],
                 push_constant_ranges: &[],
             });
 
@@ -205,7 +250,9 @@ impl State {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[Vertex::desc()],
+                // buffers[0] = InstanceRaw::desc() (per-instance)
+                // buffers[1] = Vertex::desc() (per-vertex)
+                buffers: &[InstanceRaw::desc(), Vertex::desc()],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -219,7 +266,7 @@ impl State {
                 compilation_options: Default::default(),
             }),
             primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::LineStrip,
+                topology: wgpu::PrimitiveTopology::TriangleList,
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
                 cull_mode: None,
@@ -231,34 +278,41 @@ impl State {
             multisample: wgpu::MultisampleState {
                 count: msaa_sample_count,
                 mask: !0,
-                alpha_to_coverage_enabled: true, // Improves line anti-aliasing
+                alpha_to_coverage_enabled: false,
             },
             multiview: None,
             cache: None,
         });
 
-        let vertices: Vec<Vertex> = vec![
-            Vertex {
+        let quad_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Quad Vertex Buffer"),
+            contents: bytemuck::cast_slice(QUAD_VERTICES),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        let instances: Vec<InstanceRaw> = vec![
+            InstanceRaw {
                 position: [-1.0, 0.0],
             },
-            Vertex {
+            InstanceRaw {
                 position: [-0.5, 0.5],
             },
-            Vertex {
+            InstanceRaw {
                 position: [0.0, 1.0],
             },
-            Vertex {
+            InstanceRaw {
                 position: [0.5, -0.5],
             },
-            Vertex {
+            InstanceRaw {
                 position: [1.0, 0.0],
             },
         ];
-        let num_vertices = vertices.len() as u32;
 
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Vertex Buffer"),
-            contents: bytemuck::cast_slice(&vertices),
+        let num_instances = instances.len() as u32;
+
+        let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Instance Buffer"),
+            contents: bytemuck::cast_slice(&instances),
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
 
@@ -269,14 +323,15 @@ impl State {
             config,
             is_surface_configured: size.width > 0 && size.height > 0,
             render_pipeline,
-            vertex_buffer,
-            vertices,
-            num_vertices,
+            quad_vertex_buffer,
+            instance_buffer,
+            instances,
+            num_instances,
             window,
             start_time,
-            time_uniform,
-            time_buffer,
-            time_bind_group,
+            globals_uniform,
+            globals_buffer,
+            globals_bind_group,
             msaa_sample_count,
             msaa_view,
             last_update_time: Instant::now(),
@@ -294,8 +349,8 @@ impl State {
             self.config.width = width;
             self.config.height = height;
             self.surface.configure(&self.device, &self.config);
-            // Recreate the MSAA view with the new size
             self.msaa_view = create_msaa_view(&self.device, &self.config, self.msaa_sample_count);
+            self.globals_uniform.resolution = [width as f32, height as f32];
         }
     }
 
@@ -310,21 +365,22 @@ impl State {
             return Ok(());
         }
 
-        // Update the time uniform before rendering
-        self.time_uniform.time = self.start_time.elapsed().as_secs_f32();
-        let time = self.time_uniform.time;
+        self.globals_uniform.time = self.start_time.elapsed().as_secs_f32();
+        let time = self.globals_uniform.time;
 
-        self.vertices[1].position[1] = 0.5 * f32::sin(0.5 * time);
-        self.vertices[2].position[1] = 1.0 * f32::sin(1.5 * time);
-        self.vertices[3].position[1] = 1.0 * f32::cos(0.5 * time);
-
-        self.queue
-            .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&self.vertices));
+        self.instances[1].position[1] = 0.5 * f32::sin(0.5 * time);
+        self.instances[2].position[1] = 1.0 * f32::sin(1.5 * time);
+        self.instances[3].position[1] = 1.0 * f32::cos(0.5 * time);
 
         self.queue.write_buffer(
-            &self.time_buffer,
+            &self.instance_buffer,
             0,
-            bytemuck::cast_slice(&[self.time_uniform]),
+            bytemuck::cast_slice(&self.instances),
+        );
+        self.queue.write_buffer(
+            &self.globals_buffer,
+            0,
+            bytemuck::cast_slice(&[self.globals_uniform]),
         );
 
         let output = self.surface.get_current_texture()?;
@@ -338,17 +394,15 @@ impl State {
                 label: Some("Render Encoder"),
             });
 
+        // ‼️ Removed stray 'F' here
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    // Render to the multisampled texture view
                     view: &self.msaa_view,
-                    // Resolve to the swapchain texture view
                     resolve_target: Some(&view),
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        // Discard the multisampled texture's contents after resolving
                         store: wgpu::StoreOp::Discard,
                     },
                     depth_slice: None,
@@ -359,9 +413,14 @@ impl State {
             });
 
             render_pass.set_pipeline(&self.render_pipeline);
-            render_pass.set_bind_group(0, &self.time_bind_group, &[]);
-            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            render_pass.draw(0..self.num_vertices, 0..1);
+            render_pass.set_bind_group(0, &self.globals_bind_group, &[]);
+
+            // set_vertex_buffer(0) maps to buffers[0] (InstanceRaw::desc())
+            render_pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
+            // set_vertex_buffer(1) maps to buffers[1] (Vertex::desc())
+            render_pass.set_vertex_buffer(1, self.quad_vertex_buffer.slice(..));
+
+            render_pass.draw(0..6, 0..self.num_instances);
         }
 
         self.queue.submit(iter::once(encoder.finish()));
@@ -370,13 +429,9 @@ impl State {
         self.frame_count += 1;
         let now = Instant::now();
         let delta = now.duration_since(self.last_update_time);
-
-        // Update and log FPS every 1 second
         if delta.as_secs_f64() >= 1.0 {
             let fps = self.frame_count as f64 / delta.as_secs_f64();
             println!("FPS: {:.2}", fps);
-
-            // Reset for the next interval
             self.frame_count = 0;
             self.last_update_time = now;
         }
