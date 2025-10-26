@@ -245,6 +245,9 @@ impl State {
                 position: [-0.5, 0.5],
             },
             Vertex {
+                position: [0.0, 1.0],
+            },
+            Vertex {
                 position: [0.5, -0.5],
             },
             Vertex {
@@ -311,8 +314,10 @@ impl State {
         self.time_uniform.time = self.start_time.elapsed().as_secs_f32();
         let time = self.time_uniform.time;
 
-        self.vertices[1].position[1] = 0.5 * time.sin();
-        self.vertices[2].position[1] = -0.5 * time.cos();
+        self.vertices[1].position[1] = 0.5 * f32::sin(0.5 * time);
+        self.vertices[2].position[1] = 1.0 * f32::sin(1.5 * time);
+        self.vertices[3].position[1] = 1.0 * f32::cos(0.5 * time);
+
         self.queue
             .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&self.vertices));
 
