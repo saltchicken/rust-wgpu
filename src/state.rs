@@ -1,4 +1,7 @@
-use std::{iter, sync::Arc, time::Instant};
+use pipelink_audio_lib::{AudioMetadata, METADATA_SIZE};
+use proclink::ShmemReader;
+use rustfft::{num_complex::Complex, Fft, FftPlanner};
+use std::{iter, mem, sync::Arc, time::Instant};
 use wgpu::util::DeviceExt;
 use winit::{event_loop::ActiveEventLoop, keyboard::KeyCode, window::Window};
 
@@ -30,27 +33,18 @@ impl Vertex {
 }
 
 fn create_vertices(num_vertices: u32) -> Vec<Vertex> {
-    // TODO: Proper error handling when not enough vertices
     if num_vertices < 2 {
-        return Vec::new(); // Need at least 2 vertices to form a line
+        return Vec::new();
     }
-
     let mut vertices = Vec::with_capacity(num_vertices as usize);
-    // ‼️ Calculate the horizontal distance (step) between each vertex
-    // ‼️ We span from -1.0 to 1.0 (a total distance of 2.0)
     let step = 2.0 / (num_vertices as f32 - 1.0);
-
     for i in 0..num_vertices {
-        // ‼️ Calculate the x-coordinate for the current vertex
         let x = -1.0 + (i as f32 * step);
-        // ‼️ Initialize y-coordinate to 0.0
         vertices.push(Vertex { position: [x, 0.0] });
     }
-
     vertices
 }
 
-// Helper function to create the MSAA texture view
 fn create_msaa_view(
     device: &wgpu::Device,
     config: &wgpu::SurfaceConfiguration,
@@ -92,6 +86,10 @@ pub struct State {
     frame_count: u32,
     msaa_sample_count: u32,
     msaa_view: wgpu::TextureView,
+    reader: ShmemReader,
+    fft_planner: FftPlanner<f32>,
+    fft_plan: Option<(usize, Arc<dyn Fft<f32>>)>,
+    complex_buffer: Vec<Complex<f32>>,
 }
 
 impl State {
@@ -103,6 +101,7 @@ impl State {
         });
 
         let surface = instance.create_surface(window.clone()).unwrap();
+
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::default(),
@@ -111,6 +110,7 @@ impl State {
             })
             .await
             .unwrap();
+
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
@@ -156,28 +156,27 @@ impl State {
         if alpha_mode == wgpu::CompositeAlphaMode::Opaque {
             log::warn!("Surface does not support transparency, falling back to Opaque.");
         }
+
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
             width: size.width,
             height: size.height,
             present_mode,
-            // present_mode: surface_caps.present_modes[0],
             alpha_mode,
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
-
         if size.width > 0 && size.height > 0 {
             surface.configure(&device, &config);
         }
 
-        // Set sample count and create the initial MSAA view
         let msaa_sample_count = 4;
         let msaa_view = create_msaa_view(&device, &config, msaa_sample_count);
 
         let start_time = Instant::now();
         let time_uniform = TimeUniform { time: 0.0 };
+
         let time_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Time Buffer"),
             contents: bytemuck::cast_slice(&[time_uniform]),
@@ -240,7 +239,7 @@ impl State {
                 compilation_options: Default::default(),
             }),
             primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::PointList,
+                topology: wgpu::PrimitiveTopology::LineStrip,
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
                 cull_mode: None,
@@ -252,13 +251,13 @@ impl State {
             multisample: wgpu::MultisampleState {
                 count: msaa_sample_count,
                 mask: !0,
-                alpha_to_coverage_enabled: true, // Improves line anti-aliasing
+                alpha_to_coverage_enabled: true,
             },
             multiview: None,
             cache: None,
         });
 
-        let vertices = create_vertices(200);
+        let vertices = create_vertices(128);
         let num_vertices = vertices.len() as u32;
 
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -266,6 +265,11 @@ impl State {
             contents: bytemuck::cast_slice(&vertices),
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
+
+        let reader = ShmemReader::new("pipelink-audio").expect("Failed to open shared memory");
+        let fft_planner = FftPlanner::new();
+        let fft_plan: Option<(usize, Arc<dyn Fft<f32>>)> = None;
+        let complex_buffer: Vec<Complex<f32>> = Vec::new();
 
         Ok(Self {
             surface,
@@ -286,6 +290,10 @@ impl State {
             msaa_view,
             last_update_time: Instant::now(),
             frame_count: 0,
+            reader,
+            fft_planner,
+            fft_plan,
+            complex_buffer,
         })
     }
 
@@ -299,7 +307,6 @@ impl State {
             self.config.width = width;
             self.config.height = height;
             self.surface.configure(&self.device, &self.config);
-            // Recreate the MSAA view with the new size
             self.msaa_view = create_msaa_view(&self.device, &self.config, self.msaa_sample_count);
         }
     }
@@ -310,23 +317,146 @@ impl State {
         }
     }
 
+    fn process_audio_data(&mut self, data: &[u8]) {
+        if data.len() < METADATA_SIZE {
+            println!(
+                "[AudioReaderFFT] ⚠️ Received data is too small for metadata! Need {}, got {}",
+                METADATA_SIZE,
+                data.len()
+            );
+        }
+
+        let (metadata_bytes, audio_data) = data.split_at(METADATA_SIZE);
+        let metadata: &AudioMetadata = bytemuck::from_bytes(metadata_bytes);
+        let audio_data_len = audio_data.len();
+        let expected_bytes = (metadata.n_samples_per_channel
+            * metadata.n_channels
+            * mem::size_of::<f32>() as u32) as usize;
+        let num_floats_received = audio_data_len / mem::size_of::<f32>();
+
+        println!("[AudioReaderFFT] ✅ Read {} bytes total.", data.len());
+        println!("  Sample Rate: {} Hz", metadata.sample_rate);
+        println!("  Channels: {}", metadata.n_channels);
+        println!("  Samples per Channel: {}", metadata.n_samples_per_channel);
+        println!(
+            "  Audio Data Bytes: {} (Expected: {})",
+            audio_data_len, expected_bytes
+        );
+        println!("  Total Floats Received: {}\n", num_floats_received);
+
+        if audio_data_len != expected_bytes {
+            println!(
+                "[AudioReaderFFT] ⚠️ WARNING: Received audio data size does not match metadata!"
+            );
+        }
+
+        if metadata.n_samples_per_channel > 0 && metadata.n_channels > 0 {
+            let n_samples = metadata.n_samples_per_channel as usize;
+            let n_chans_usize = metadata.n_channels as usize;
+
+            let fft = match &mut self.fft_plan {
+                Some((size, plan)) if *size == n_samples => plan,
+                _ => {
+                    println!(
+                        "[AudioReaderFFT] ‼️ Creating new FFT plan for size {}",
+                        n_samples
+                    );
+                    let plan = self.fft_planner.plan_fft_forward(n_samples);
+                    self.fft_plan = Some((n_samples, plan));
+                    &self.fft_plan.as_mut().unwrap().1
+                }
+            };
+
+            self.complex_buffer.clear();
+            self.complex_buffer.resize(n_samples, Complex::default());
+            let audio_floats: &[f32] = bytemuck::cast_slice(audio_data);
+            for (i, sample_f32) in audio_floats
+                .iter()
+                .step_by(n_chans_usize)
+                .enumerate()
+                .take(n_samples)
+            {
+                self.complex_buffer[i] = Complex {
+                    re: *sample_f32,
+                    im: 0.0,
+                };
+            }
+
+            fft.process(&mut self.complex_buffer);
+
+            let num_useful_bins = n_samples / 2; // 512 bins
+
+            let (peak_bin_index, peak_magnitude) = self.complex_buffer[..num_useful_bins]
+                .iter()
+                .enumerate()
+                .map(|(i, c)| (i, c.norm()))
+                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                .unwrap_or((0, 0.0));
+
+            let bin_width = metadata.sample_rate / (n_samples as f32);
+            let peak_frequency = peak_bin_index as f32 * bin_width;
+
+            println!(
+                "  [FFT] ‼️ Peak Frequency (Ch 0): {:.2} Hz (Magnitude: {:.2})\n",
+                peak_frequency, peak_magnitude
+            );
+
+            let num_vertices = self.vertices.len(); // 512 vertices
+            if num_vertices == 0 || num_useful_bins == 0 {
+                return;
+            }
+
+            let db_min = -50.0;
+            let db_max = 0.0;
+            let normalization_factor = (n_samples / 2) as f32;
+
+            let total_freq_range = metadata.sample_rate as f32 / 2.0;
+            // ‼️ --- CHANGE HERE ---
+            let desired_max_freq = 6000.0; // ‼️ Your desired 6kHz limit
+                                           // ‼️ --- END OF CHANGE ---
+
+            let freq_ratio = (desired_max_freq / total_freq_range).min(1.0).max(0.0);
+            let max_bin_to_display = ((num_useful_bins - 1) as f32 * freq_ratio).round() as usize;
+
+            println!(
+                "  [VIS] ‼️ Mapping {} vertices to FFT bins [0, {}] (0 Hz to {:.2} Hz)",
+                num_vertices, max_bin_to_display, desired_max_freq
+            );
+
+            for (i, vertex) in self.vertices.iter_mut().enumerate() {
+                let percent = i as f32 / (num_vertices - 1) as f32; // 0.0 to 1.0
+                let bin_index = (percent * max_bin_to_display as f32).round() as usize;
+                let magnitude = self.complex_buffer[bin_index].norm();
+
+                let normalized_mag = magnitude / normalization_factor;
+                let db = 20.0 * (normalized_mag + 1e-9).log10();
+                let scaled_db = ((db - db_min) / (db_max - db_min)).max(0.0).min(1.0);
+                let y = (scaled_db * 2.0) - 1.0;
+
+                vertex.position[1] = y;
+            }
+
+            self.queue
+                .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&self.vertices));
+        }
+    }
+
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         if !self.is_surface_configured {
             return Ok(());
         }
 
-        // Update the time uniform before rendering
-        self.time_uniform.time = self.start_time.elapsed().as_secs_f32();
-        let time = self.time_uniform.time;
-
-        for vertex in self.vertices.iter_mut() {
-            let x = vertex.position[0];
-            vertex.position[1] = 0.5 * f32::sin(x * 5.0 + time * 2.0);
+        match self.reader.read() {
+            Ok(Some(data)) => {
+                self.process_audio_data(&data);
+            }
+            Ok(None) => {}
+            Err(e) => {
+                eprintln!("[AudioReaderFFT] ❌ Error reading: {}", e);
+            }
         }
 
-        self.queue
-            .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&self.vertices));
-
+        self.time_uniform.time = self.start_time.elapsed().as_secs_f32();
         self.queue.write_buffer(
             &self.time_buffer,
             0,
@@ -343,18 +473,14 @@ impl State {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Render Encoder"),
             });
-
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    // Render to the multisampled texture view
                     view: &self.msaa_view,
-                    // Resolve to the swapchain texture view
                     resolve_target: Some(&view),
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        // Discard the multisampled texture's contents after resolving
                         store: wgpu::StoreOp::Discard,
                     },
                     depth_slice: None,
@@ -376,13 +502,9 @@ impl State {
         self.frame_count += 1;
         let now = Instant::now();
         let delta = now.duration_since(self.last_update_time);
-
-        // Update and log FPS every 1 second
         if delta.as_secs_f64() >= 1.0 {
             let fps = self.frame_count as f64 / delta.as_secs_f64();
             println!("FPS: {:.2}", fps);
-
-            // Reset for the next interval
             self.frame_count = 0;
             self.last_update_time = now;
         }
