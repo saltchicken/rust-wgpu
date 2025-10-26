@@ -2,11 +2,10 @@ use std::{iter, sync::Arc, time::Instant};
 use wgpu::util::DeviceExt;
 use winit::{event_loop::ActiveEventLoop, keyboard::KeyCode, window::Window};
 
-// ‼️ Renamed from PersistenceUniform
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct DenoiseUniform {
-    factor: f32, // ‼️ This will now be the denoise_factor itself
+    factor: f32,
 }
 
 #[repr(C)]
