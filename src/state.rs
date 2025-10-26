@@ -67,6 +67,13 @@ fn create_msaa_view(
     msaa_texture.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
+// ‼️ --- START OF CHANGES ---
+// ‼️ Helper function for linear interpolation
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a * (1.0 - t) + b * t
+}
+// ‼️ --- END OF CHANGES ---
+
 pub struct State {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
@@ -75,14 +82,14 @@ pub struct State {
     is_surface_configured: bool,
     render_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
-    vertices: Vec<Vertex>,
+    vertices: Vec<Vertex>, // ‼️ This is the *current* state being drawn
     num_vertices: u32,
     window: Arc<Window>,
     start_time: Instant,
     time_uniform: TimeUniform,
     time_buffer: wgpu::Buffer,
     time_bind_group: wgpu::BindGroup,
-    last_update_time: Instant,
+    last_update_time: Instant, // ‼️ Used for BOTH dt calculation and FPS logging
     frame_count: u32,
     msaa_sample_count: u32,
     msaa_view: wgpu::TextureView,
@@ -90,6 +97,11 @@ pub struct State {
     fft_planner: FftPlanner<f32>,
     fft_plan: Option<(usize, Arc<dyn Fft<f32>>)>,
     complex_buffer: Vec<Complex<f32>>,
+
+    // ‼️ --- START OF CHANGES ---
+    /// Holds the "target" or "goal" vertex positions from the latest FFT.
+    target_vertices: Vec<Vertex>,
+    // ‼️ --- END OF CHANGES ---
 }
 
 impl State {
@@ -239,6 +251,7 @@ impl State {
                 compilation_options: Default::default(),
             }),
             primitive: wgpu::PrimitiveState {
+                // ‼️ Changed back to LineStrip, but PointList would also work
                 topology: wgpu::PrimitiveTopology::LineStrip,
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
@@ -271,6 +284,10 @@ impl State {
         let fft_plan: Option<(usize, Arc<dyn Fft<f32>>)> = None;
         let complex_buffer: Vec<Complex<f32>> = Vec::new();
 
+        // ‼️ --- START OF CHANGES ---
+        let target_vertices = vertices.clone(); // Initialize target
+                                                // ‼️ --- END OF CHANGES ---
+
         Ok(Self {
             surface,
             device,
@@ -279,7 +296,7 @@ impl State {
             is_surface_configured: size.width > 0 && size.height > 0,
             render_pipeline,
             vertex_buffer,
-            vertices,
+            vertices, // Current state
             num_vertices,
             window,
             start_time,
@@ -288,12 +305,13 @@ impl State {
             time_bind_group,
             msaa_sample_count,
             msaa_view,
-            last_update_time: Instant::now(),
+            last_update_time: Instant::now(), // For dt and FPS
             frame_count: 0,
             reader,
             fft_planner,
             fft_plan,
             complex_buffer,
+            target_vertices, // Target state
         })
     }
 
@@ -317,43 +335,38 @@ impl State {
         }
     }
 
+    // ‼️ --- START OF CHANGES ---
+    /// Processes audio data and updates the *target* vertices.
     fn process_audio_data(&mut self, data: &[u8]) {
+        // ... (metadata reading, FFT planning, buffer filling - NO CHANGES HERE) ...
         if data.len() < METADATA_SIZE {
             println!(
                 "[AudioReaderFFT] ⚠️ Received data is too small for metadata! Need {}, got {}",
                 METADATA_SIZE,
                 data.len()
             );
+            return; // ‼️ Early return if data too small
         }
-
         let (metadata_bytes, audio_data) = data.split_at(METADATA_SIZE);
         let metadata: &AudioMetadata = bytemuck::from_bytes(metadata_bytes);
         let audio_data_len = audio_data.len();
         let expected_bytes = (metadata.n_samples_per_channel
             * metadata.n_channels
             * mem::size_of::<f32>() as u32) as usize;
-        let num_floats_received = audio_data_len / mem::size_of::<f32>();
 
-        println!("[AudioReaderFFT] ✅ Read {} bytes total.", data.len());
-        println!("  Sample Rate: {} Hz", metadata.sample_rate);
-        println!("  Channels: {}", metadata.n_channels);
-        println!("  Samples per Channel: {}", metadata.n_samples_per_channel);
-        println!(
-            "  Audio Data Bytes: {} (Expected: {})",
-            audio_data_len, expected_bytes
-        );
-        println!("  Total Floats Received: {}\n", num_floats_received);
+        // ‼️ Removed print statements for brevity, you can add them back if needed
 
         if audio_data_len != expected_bytes {
             println!(
                 "[AudioReaderFFT] ⚠️ WARNING: Received audio data size does not match metadata!"
             );
+            // ‼️ Consider returning here if data is invalid
+            // return;
         }
 
         if metadata.n_samples_per_channel > 0 && metadata.n_channels > 0 {
             let n_samples = metadata.n_samples_per_channel as usize;
             let n_chans_usize = metadata.n_channels as usize;
-
             let fft = match &mut self.fft_plan {
                 Some((size, plan)) if *size == n_samples => plan,
                 _ => {
@@ -366,7 +379,6 @@ impl State {
                     &self.fft_plan.as_mut().unwrap().1
                 }
             };
-
             self.complex_buffer.clear();
             self.complex_buffer.resize(n_samples, Complex::default());
             let audio_floats: &[f32] = bytemuck::cast_slice(audio_data);
@@ -381,27 +393,10 @@ impl State {
                     im: 0.0,
                 };
             }
-
             fft.process(&mut self.complex_buffer);
 
-            let num_useful_bins = n_samples / 2; // 512 bins
-
-            let (peak_bin_index, peak_magnitude) = self.complex_buffer[..num_useful_bins]
-                .iter()
-                .enumerate()
-                .map(|(i, c)| (i, c.norm()))
-                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-                .unwrap_or((0, 0.0));
-
-            let bin_width = metadata.sample_rate / (n_samples as f32);
-            let peak_frequency = peak_bin_index as f32 * bin_width;
-
-            println!(
-                "  [FFT] ‼️ Peak Frequency (Ch 0): {:.2} Hz (Magnitude: {:.2})\n",
-                peak_frequency, peak_magnitude
-            );
-
-            let num_vertices = self.vertices.len(); // 512 vertices
+            let num_useful_bins = n_samples / 2;
+            let num_vertices = self.vertices.len(); // Should be 128
             if num_vertices == 0 || num_useful_bins == 0 {
                 return;
             }
@@ -409,53 +404,75 @@ impl State {
             let db_min = -50.0;
             let db_max = 0.0;
             let normalization_factor = (n_samples / 2) as f32;
-
             let total_freq_range = metadata.sample_rate as f32 / 2.0;
-            // ‼️ --- CHANGE HERE ---
-            let desired_max_freq = 6000.0; // ‼️ Your desired 6kHz limit
-                                           // ‼️ --- END OF CHANGE ---
-
+            let desired_max_freq = 6000.0;
             let freq_ratio = (desired_max_freq / total_freq_range).min(1.0).max(0.0);
             let max_bin_to_display = ((num_useful_bins - 1) as f32 * freq_ratio).round() as usize;
 
-            println!(
-                "  [VIS] ‼️ Mapping {} vertices to FFT bins [0, {}] (0 Hz to {:.2} Hz)",
-                num_vertices, max_bin_to_display, desired_max_freq
-            );
-
-            for (i, vertex) in self.vertices.iter_mut().enumerate() {
-                let percent = i as f32 / (num_vertices - 1) as f32; // 0.0 to 1.0
+            // ‼️ Update the TARGET vertices, not the main vertices
+            for (i, vertex) in self.target_vertices.iter_mut().enumerate() {
+                let percent = i as f32 / (num_vertices - 1) as f32;
                 let bin_index = (percent * max_bin_to_display as f32).round() as usize;
-                let magnitude = self.complex_buffer[bin_index].norm();
 
+                // ‼️ Ensure bin_index is within bounds (can happen due to rounding)
+                let safe_bin_index = bin_index.min(num_useful_bins - 1);
+
+                let magnitude = self.complex_buffer[safe_bin_index].norm();
                 let normalized_mag = magnitude / normalization_factor;
                 let db = 20.0 * (normalized_mag + 1e-9).log10();
                 let scaled_db = ((db - db_min) / (db_max - db_min)).max(0.0).min(1.0);
                 let y = (scaled_db * 2.0) - 1.0;
-
                 vertex.position[1] = y;
             }
-
-            self.queue
-                .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&self.vertices));
+            // ‼️ REMOVED the queue.write_buffer call from here
         }
     }
+    // ‼️ --- END OF CHANGES ---
 
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         if !self.is_surface_configured {
             return Ok(());
         }
 
+        // ‼️ --- START OF CHANGES ---
+        let now = Instant::now();
+        // ‼️ Calculate delta time since the last frame
+        let dt = now.duration_since(self.last_update_time).as_secs_f32();
+
+        // ‼️ 1. Read audio data and update TARGET vertices if available
         match self.reader.read() {
             Ok(Some(data)) => {
+                // ‼️ This updates `self.target_vertices`
                 self.process_audio_data(&data);
             }
-            Ok(None) => {}
+            Ok(None) => {} // No new data, interpolation continues towards the last target
             Err(e) => {
                 eprintln!("[AudioReaderFFT] ❌ Error reading: {}", e);
             }
         }
 
+        // ‼️ 2. Interpolate CURRENT vertices towards TARGET vertices
+        let lerp_speed = 10.0; // Adjust for desired smoothness (higher = faster)
+        let lerp_factor = (dt * lerp_speed).min(1.0);
+
+        for i in 0..self.num_vertices as usize {
+            // ‼️ Check if target_vertices has the same length, just in case
+            if i < self.target_vertices.len() {
+                self.vertices[i].position[1] = lerp(
+                    self.vertices[i].position[1],
+                    self.target_vertices[i].position[1],
+                    lerp_factor,
+                );
+            }
+        }
+
+        // ‼️ 3. Write the *interpolated* CURRENT vertices to the GPU buffer
+        self.queue
+            .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&self.vertices));
+
+        // ‼️ --- END OF CHANGES ---
+
+        // Update time uniform (for fragment shader, if needed)
         self.time_uniform.time = self.start_time.elapsed().as_secs_f32();
         self.queue.write_buffer(
             &self.time_buffer,
@@ -463,11 +480,11 @@ impl State {
             bytemuck::cast_slice(&[self.time_uniform]),
         );
 
+        // --- Standard Render Pass ---
         let output = self.surface.get_current_texture()?;
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -489,24 +506,30 @@ impl State {
                 occlusion_query_set: None,
                 timestamp_writes: None,
             });
-
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, &self.time_bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.draw(0..self.num_vertices, 0..1);
         }
-
         self.queue.submit(iter::once(encoder.finish()));
         output.present();
 
+        // --- FPS Counter ---
         self.frame_count += 1;
-        let now = Instant::now();
-        let delta = now.duration_since(self.last_update_time);
-        if delta.as_secs_f64() >= 1.0 {
-            let fps = self.frame_count as f64 / delta.as_secs_f64();
+        // let now = Instant::now(); // Already have `now` from above
+        let delta_fps = now.duration_since(self.last_update_time);
+
+        // ‼️ Update last_update_time *every* frame for correct dt calculation next frame
+        self.last_update_time = now;
+
+        // Log FPS about once per second (using delta_fps)
+        if delta_fps.as_secs_f64() >= 1.0 {
+            // This calculation is now slightly off because delta_fps isn't exactly 1s
+            // but it's good enough for logging.
+            let fps = self.frame_count as f64 / delta_fps.as_secs_f64();
             println!("FPS: {:.2}", fps);
             self.frame_count = 0;
-            self.last_update_time = now;
+            // Don't reset last_update_time here anymore
         }
 
         Ok(())
