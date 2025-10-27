@@ -285,13 +285,41 @@ impl State {
             .copied()
             .find(|f| f.is_srgb())
             .unwrap_or(surface_caps.formats[0]);
+        let present_mode = surface_caps
+            .present_modes
+            .iter()
+            .copied()
+            .find(|mode| *mode == wgpu::PresentMode::Fifo)
+            .unwrap_or(surface_caps.present_modes[0]);
+        let desired_modes = [
+            wgpu::CompositeAlphaMode::PostMultiplied,
+            wgpu::CompositeAlphaMode::Auto,
+            wgpu::CompositeAlphaMode::Inherit,
+        ];
+        let alpha_mode = desired_modes
+            .into_iter()
+            .find(|mode| surface_caps.alpha_modes.contains(mode))
+            .unwrap_or_else(|| {
+                surface_caps
+                    .alpha_modes
+                    .iter()
+                    .copied()
+                    .find(|mode| *mode != wgpu::CompositeAlphaMode::Opaque)
+                    .unwrap_or(surface_caps.alpha_modes[0])
+            });
+        if alpha_mode == wgpu::CompositeAlphaMode::Opaque {
+            log::warn!("Surface does not support transparency, falling back to Opaque.");
+        }
+
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
             width: size.width,
             height: size.height,
-            present_mode: surface_caps.present_modes[0],
-            alpha_mode: surface_caps.alpha_modes[0],
+            present_mode,
+            // present_mode: surface_caps.present_modes[0],
+            alpha_mode,
+            // alpha_mode: surface_caps.alpha_modes[0],
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
