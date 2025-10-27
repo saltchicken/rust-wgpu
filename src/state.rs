@@ -810,8 +810,6 @@ impl State {
                 module: &shader,
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
-                    // ‼️ FIX #1: This pipeline renders to the off-screen points texture,
-                    // ‼️ so it MUST match that texture's format.
                     format: feedback_texture_format,
                     blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: wgpu::ColorWrites::ALL,
@@ -829,7 +827,7 @@ impl State {
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState {
-                count: msaa_sample_count, // ‼️ It renders to an MSAA view
+                count: msaa_sample_count,
                 mask: !0,
                 alpha_to_coverage_enabled: true,
             },
@@ -915,7 +913,7 @@ impl State {
             self.msaa_view = create_msaa_view(&self.device, &self.config, self.msaa_sample_count);
         }
 
-        // ‼️ --- Recreate Feedback Resources ---
+        //  --- Recreate Feedback Resources ---
         let (ping_texture, ping_texture_view) =
             create_feedback_texture(&self.device, width, height, self.feedback_texture_format);
         let (pong_texture, pong_texture_view) =
@@ -923,13 +921,13 @@ impl State {
         self.feedback_textures = [ping_texture, pong_texture];
         self.feedback_texture_views = [ping_texture_view, pong_texture_view];
 
-        // ‼️ Recreate points texture
+        // Recreate points texture
         let (points_texture, points_texture_view) =
             create_feedback_texture(&self.device, width, height, self.feedback_texture_format);
         self.points_texture = points_texture;
         self.points_texture_view = points_texture_view;
 
-        // ‼️ Recreate simple read BGs
+        //  Recreate simple read BGs
         let feedback_read_bind_group_0 =
             self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Feedback Read BG 0"),
@@ -966,7 +964,7 @@ impl State {
             });
         self.feedback_read_bind_groups = [feedback_read_bind_group_0, feedback_read_bind_group_1];
 
-        // ‼️ Recreate mix BGs
+        //  Recreate mix BGs
         let feedback_mix_bind_group_0 = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Feedback Mix BG 0"),
             layout: &self.feedback_mix_bgl,
@@ -1093,7 +1091,7 @@ impl State {
                     resolve_target: Some(&self.points_texture_view), // Resolve to points_texture
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), // Clear
-                        store: wgpu::StoreOp::Store, // ‼️ Store the resolved texture
+                        store: wgpu::StoreOp::Store, // Store the resolved texture
                     },
                     depth_slice: None,
                 })],
