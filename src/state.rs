@@ -29,27 +29,54 @@ impl Vertex {
     }
 }
 
-fn create_vertices(num_vertices: u32) -> Vec<Vertex> {
-    // TODO: Proper error handling when not enough vertices
-    if num_vertices < 2 {
-        return Vec::new(); // Need at least 2 vertices to form a line
+// fn create_vertices(num_vertices: u32) -> Vec<Vertex> {
+//     // TODO: Proper error handling when not enough vertices
+//     if num_vertices < 2 {
+//         return Vec::new(); // Need at least 2 vertices to form a line
+//     }
+//
+//     let mut vertices = Vec::with_capacity(num_vertices as usize);
+//     let step = 2.0 / (num_vertices as f32 - 1.0);
+//
+//     for i in 0..num_vertices {
+//         // Calculate the x-coordinate for the current vertex
+//         let x = -1.0 + (i as f32 * step);
+//         // Initialize y-coordinate to 0.0
+//         vertices.push(Vertex { position: [x, 0.0] });
+//     }
+//
+//     vertices
+// }
+
+fn create_vertices(points_per_axis: u32) -> Vec<Vertex> {
+    if points_per_axis == 0 {
+        return Vec::new();
+    }
+    // ‼️ Handle a single point
+    if points_per_axis == 1 {
+        return vec![Vertex {
+            position: [0.0, 0.0],
+        }];
     }
 
-    let mut vertices = Vec::with_capacity(num_vertices as usize);
-    // ‼️ Calculate the horizontal distance (step) between each vertex
-    // ‼️ We span from -1.0 to 1.0 (a total distance of 2.0)
-    let step = 2.0 / (num_vertices as f32 - 1.0);
+    // ‼️ Calculate total vertices for the grid
+    let total_vertices = (points_per_axis * points_per_axis) as usize;
+    let mut vertices = Vec::with_capacity(total_vertices);
+    // ‼️ Calculate step size to span clip space from -1.0 to 1.0
+    let step = 2.0 / (points_per_axis as f32 - 1.0);
 
-    for i in 0..num_vertices {
-        // ‼️ Calculate the x-coordinate for the current vertex
-        let x = -1.0 + (i as f32 * step);
-        // ‼️ Initialize y-coordinate to 0.0
-        vertices.push(Vertex { position: [x, 0.0] });
+    // ‼️ Use nested loops to generate grid points
+    for j in 0..points_per_axis {
+        // Current y-coordinate
+        let y = -1.0 + (j as f32 * step);
+        for i in 0..points_per_axis {
+            // Current x-coordinate
+            let x = -1.0 + (i as f32 * step);
+            vertices.push(Vertex { position: [x, y] });
+        }
     }
-
     vertices
 }
-
 // Helper function to create the MSAA texture view
 fn create_msaa_view(
     device: &wgpu::Device,
@@ -81,7 +108,8 @@ pub struct State {
     is_surface_configured: bool,
     render_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
-    vertices: Vec<Vertex>,
+    base_vertices: Vec<Vertex>,
+    animated_vertices: Vec<Vertex>,
     num_vertices: u32,
     window: Arc<Window>,
     start_time: Instant,
@@ -161,9 +189,10 @@ impl State {
             format: surface_format,
             width: size.width,
             height: size.height,
-            present_mode,
-            // present_mode: surface_caps.present_modes[0],
-            alpha_mode,
+            // present_mode,
+            present_mode: surface_caps.present_modes[0],
+            // alpha_mode,
+            alpha_mode: surface_caps.alpha_modes[0],
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
@@ -258,12 +287,13 @@ impl State {
             cache: None,
         });
 
-        let vertices = create_vertices(200);
-        let num_vertices = vertices.len() as u32;
+        let base_vertices = create_vertices(50);
+        let animated_vertices = base_vertices.clone();
+        let num_vertices = base_vertices.len() as u32;
 
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Vertex Buffer"),
-            contents: bytemuck::cast_slice(&vertices),
+            contents: bytemuck::cast_slice(&base_vertices),
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
 
@@ -275,7 +305,8 @@ impl State {
             is_surface_configured: size.width > 0 && size.height > 0,
             render_pipeline,
             vertex_buffer,
-            vertices,
+            base_vertices,
+            animated_vertices,
             num_vertices,
             window,
             start_time,
@@ -319,13 +350,7 @@ impl State {
         self.time_uniform.time = self.start_time.elapsed().as_secs_f32();
         let time = self.time_uniform.time;
 
-        for vertex in self.vertices.iter_mut() {
-            let x = vertex.position[0];
-            vertex.position[1] = 0.5 * f32::sin(x * 5.0 + time * 2.0);
-        }
-
-        self.queue
-            .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&self.vertices));
+        self.process_vertices(&time);
 
         self.queue.write_buffer(
             &self.time_buffer,
@@ -353,7 +378,7 @@ impl State {
                     // Resolve to the swapchain texture view
                     resolve_target: Some(&view),
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                         // Discard the multisampled texture's contents after resolving
                         store: wgpu::StoreOp::Discard,
                     },
@@ -388,5 +413,31 @@ impl State {
         }
 
         Ok(())
+    }
+    fn process_vertices(&mut self, &time: &f32) {
+        // ‼️ Use the new, clearer names
+        for (base, anim) in self
+            .base_vertices
+            .iter()
+            .zip(self.animated_vertices.iter_mut())
+        {
+            let x = base.position[0];
+            let y = base.position[1];
+
+            // Calculate an offset based on the original (x, y) grid position and time
+            // This creates a wave that respects the initial position
+            let offset = 0.1 * f32::sin(x * 10.0 + y * 10.0 + time * 2.0);
+
+            // Apply the offset to the original y-position
+            anim.position[0] = x; // Keep original x
+            anim.position[1] = y + offset; // Add the wave offset to the original y
+        }
+
+        // Write the modified vertex data (self.animated_vertices) to the GPU buffer
+        self.queue.write_buffer(
+            &self.vertex_buffer,
+            0,
+            bytemuck::cast_slice(&self.animated_vertices),
+        );
     }
 }
