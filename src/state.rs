@@ -44,26 +44,26 @@ pub struct Grid<T> {
 }
 
 impl<T> Grid<T> {
-    // pub fn get(&self, x: u32, y: u32) -> Option<&T> {
-    //     if x >= self.width || y >= self.height {
-    //         return None;
-    //     }
-    //     self.data.get((y * self.width + x) as usize)
-    // }
-    //
-    // pub fn get_mut(&mut self, x: u32, y: u32) -> Option<&mut T> {
-    //     if x >= self.width || y >= self.height {
-    //         return None;
-    //     }
-    //     self.data.get_mut((y * self.width + x) as usize)
-    // }
-    //
-    // pub fn width(&self) -> u32 {
-    //     self.width
-    // }
-    // pub fn height(&self) -> u32 {
-    //     self.height
-    // }
+    pub fn get(&self, x: u32, y: u32) -> Option<&T> {
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        self.data.get((y * self.width + x) as usize)
+    }
+
+    pub fn get_mut(&mut self, x: u32, y: u32) -> Option<&mut T> {
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        self.data.get_mut((y * self.width + x) as usize)
+    }
+
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+    pub fn height(&self) -> u32 {
+        self.height
+    }
 
     pub fn as_flat_vec(&self) -> &Vec<T> {
         &self.data
@@ -160,6 +160,7 @@ pub struct State {
     is_surface_configured: bool,
     render_pipeline: wgpu::RenderPipeline,
 
+    base_grid: Grid<Vertex>,
     base_vertex_buffer: wgpu::Buffer,
     animated_vertex_buffer: wgpu::Buffer,
 
@@ -413,6 +414,7 @@ impl State {
             is_surface_configured: size.width > 0 && size.height > 0,
             render_pipeline,
 
+            base_grid,
             base_vertex_buffer,
             animated_vertex_buffer,
             compute_pipeline,
@@ -431,6 +433,27 @@ impl State {
         })
     }
 
+    pub fn modify_base_vertex(&mut self, x: u32, y: u32, new_pos: [f32; 2]) {
+        // 1. Get width *before* the mutable borrow to avoid the error
+        let width = self.base_grid.width();
+
+        // 2. Update the CPU-side grid
+        if let Some(vertex) = self.base_grid.get_mut(x, y) {
+            vertex.position = new_pos;
+
+            // 3. Calculate the byte offset in the GPU buffer
+            let vertex_size = std::mem::size_of::<Vertex>() as wgpu::BufferAddress;
+            // Use the `width` variable here
+            let offset = (y * width + x) as wgpu::BufferAddress * vertex_size;
+
+            // 4. Write just this one vertex's data to the GPU buffer
+            self.queue.write_buffer(
+                &self.base_vertex_buffer,
+                offset,
+                bytemuck::cast_slice(&[*vertex]), // Create a slice containing one copied vertex
+            );
+        }
+    }
     pub fn window(&self) -> &Window {
         &self.window
     }
@@ -448,6 +471,10 @@ impl State {
     pub fn handle_key(&mut self, event_loop: &ActiveEventLoop, key: KeyCode, pressed: bool) {
         if key == KeyCode::Escape && pressed {
             event_loop.exit();
+        }
+        //NOTE: This is just a random test
+        if key == KeyCode::Space && pressed {
+            self.modify_base_vertex(25, 25, [1.0, 1.0]);
         }
     }
 
