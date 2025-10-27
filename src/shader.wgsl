@@ -34,9 +34,7 @@ fn rotation_z(angle: f32) -> mat4x4<f32> {
 fn cs_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let idx = global_id.x;
 
-    // TODO: Make this dynamic
-    // Must match total number of vertices
-    let total_vertices = 50u * 50u; 
+    let total_vertices = arrayLength(&base_vertices); 
     
     // Bounds check to prevent out-of-bounds access
     if idx >= total_vertices {
