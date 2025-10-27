@@ -1023,12 +1023,12 @@ impl State {
                 event_loop.exit();
             }
             KeyCode::ArrowUp => {
-                self.denoise_factor = (self.denoise_factor + 0.01).min(1.0);
-                println!("Denoise Factor (Less Trail): {:.2}", self.denoise_factor);
+                self.denoise_factor = (self.denoise_factor + 0.0025).min(1.0);
+                println!("Denoise Factor (Less Trail): {:.4}", self.denoise_factor);
             }
             KeyCode::ArrowDown => {
-                self.denoise_factor = (self.denoise_factor - 0.01).max(0.0);
-                println!("Denoise Factor (More Trail): {:.2}", self.denoise_factor);
+                self.denoise_factor = (self.denoise_factor - 0.0025).max(0.0025);
+                println!("Denoise Factor (More Trail): {:.4}", self.denoise_factor);
             }
             _ => {}
         }
@@ -1084,8 +1084,8 @@ impl State {
         let write_index = 1 - self.frame_index;
 
         {
-            // ‼️ --- Pass 1: Points Pass ---
-            // ‼️ Render the animated points to the off-screen "points_texture"
+            //  --- Pass 1: Points Pass ---
+            //  Render the animated points to the off-screen "points_texture"
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Points Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1106,9 +1106,9 @@ impl State {
             render_pass.draw(0..self.num_vertices, 0..1);
         }
 
-        // ‼️ --- Pass 2: Feedback Mix Pass ---
-        // ‼️ Mix old frame (from feedback_textures[read]) and new points (from points_texture)
-        // ‼️ and write the result to the new frame (feedback_textures[write])
+        //  --- Pass 2: Feedback Mix Pass ---
+        //  Mix old frame (from feedback_textures[read]) and new points (from points_texture)
+        //  and write the result to the new frame (feedback_textures[write])
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Feedback Mix Pass"),
@@ -1130,8 +1130,8 @@ impl State {
             render_pass.draw(0..3, 0..1);
         }
 
-        // ‼️ --- Pass 3: Composite Pass ---
-        // ‼️ Draw the final mixed frame (feedback_textures[write]) to the screen
+        //  --- Pass 3: Composite Pass ---
+        //  Draw the final mixed frame (feedback_textures[write]) to the screen
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Composite Pass"),
@@ -1152,13 +1152,11 @@ impl State {
             render_pass.draw(0..3, 0..1);
         }
 
-        // ‼️ FIX #2: The redundant, fourth render pass has been DELETED from here.
-
         // Submit all passes at once
         self.queue.submit(iter::once(encoder.finish()));
         output.present();
 
-        // ‼️ Swap frames for next tick
+        // Swap frames for next tick
         self.frame_index = write_index;
 
         // ... (FPS counter remains the same) ...
