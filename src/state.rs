@@ -160,7 +160,7 @@ pub struct State {
     is_surface_configured: bool,
     render_pipeline: wgpu::RenderPipeline,
 
-    // base_vertex_buffer: wgpu::Buffer,
+    base_vertex_buffer: wgpu::Buffer,
     animated_vertex_buffer: wgpu::Buffer,
 
     compute_pipeline: wgpu::ComputePipeline,
@@ -413,8 +413,7 @@ impl State {
             is_surface_configured: size.width > 0 && size.height > 0,
             render_pipeline,
 
-            // ‼️ Set new fields
-            // base_vertex_buffer,
+            base_vertex_buffer,
             animated_vertex_buffer,
             compute_pipeline,
             compute_bind_group,
