@@ -474,7 +474,7 @@ impl State {
         }
         //NOTE: This is just a random test
         if key == KeyCode::Space && pressed {
-            self.modify_base_vertex(25, 25, [1.0, 1.0]);
+            self.modify_base_vertex(25, 25, [f32::NAN, f32::NAN]);
         }
     }
 
