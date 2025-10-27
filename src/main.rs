@@ -29,7 +29,7 @@ impl ApplicationHandler for App {
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let window_size = LogicalSize::new(5120, 1440);
+        let window_size = LogicalSize::new(1920, 1080);
         let window_attributes = Window::default_attributes()
             .with_title("Native WGPU App")
             .with_inner_size(window_size)
