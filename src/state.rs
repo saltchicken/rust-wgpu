@@ -1,3 +1,4 @@
+use glam::{Mat4, Vec4};
 use std::{iter, sync::Arc, time::Instant};
 use wgpu::util::DeviceExt;
 use winit::{event_loop::ActiveEventLoop, keyboard::KeyCode, window::Window};
@@ -78,16 +79,26 @@ impl<T: Clone> Clone for Grid<T> {
     }
 }
 
-// ‼️ Function now returns a Grid<Vertex>
 fn create_vertex_grid(points_x: u32, points_y: u32) -> Grid<Vertex> {
     if points_x == 0 || points_y == 0 {
-        // ‼️ Return an empty grid
+        // Return an empty grid
         return Grid {
             data: Vec::new(),
             width: 0,
             height: 0,
         };
     }
+
+    // ‼️ Define the buffer size.
+    // ‼️ sqrt(2) is the distance from the center (0,0) to the corner (1,1).
+
+    let additional_buffer = 0.1;
+    let grid_buffer = 2.0_f32.sqrt(); // approx 1.414
+                                      //
+    let buffer = grid_buffer + additional_buffer;
+
+    // ‼️ The total width/height of the grid will be from -buffer to +buffer.
+    let grid_range = buffer * 2.0;
 
     // Calculate total vertices for the grid
     let total_vertices = (points_x * points_y) as usize;
@@ -96,45 +107,44 @@ fn create_vertex_grid(points_x: u32, points_y: u32) -> Grid<Vertex> {
     // Calculate step size for each axis independently
     // If only 1 point, step is 0 (it will be centered)
     let step_x = if points_x > 1 {
-        2.0 / (points_x - 1) as f32
+        grid_range / (points_x - 1) as f32 // ‼️ Use new grid_range
     } else {
         0.0
     };
     let step_y = if points_y > 1 {
-        2.0 / (points_y - 1) as f32
+        grid_range / (points_y - 1) as f32 // ‼️ Use new grid_range
     } else {
         0.0
     };
 
     for j in 0..points_y {
         // Current y-coordinate
-        // If 1 point, center it at 0.0, otherwise map from -1.0 to 1.0
+        // If 1 point, center it at 0.0, otherwise map from -buffer to +buffer
         let y = if points_y == 1 {
             0.0
         } else {
-            -1.0 + (j as f32 * step_y)
+            -buffer + (j as f32 * step_y) // ‼️ Start at -buffer
         };
 
         for i in 0..points_x {
             // Current x-coordinate
-            // If 1 point, center it at 0.0, otherwise map from -1.0 to 1.0
+            // If 1 point, center it at 0.0, otherwise map from -buffer to +buffer
             let x = if points_x == 1 {
                 0.0
             } else {
-                -1.0 + (i as f32 * step_x)
+                -buffer + (i as f32 * step_x) // ‼️ Start at -buffer
             };
             vertices.push(Vertex { position: [x, y] });
         }
     }
 
-    // ‼️ Return the populated Grid struct
+    // Return the populated Grid struct
     Grid {
         data: vertices,
         width: points_x,
         height: points_y,
     }
 }
-
 // Helper function to create the MSAA texture view
 fn create_msaa_view(
     device: &wgpu::Device,
@@ -347,7 +357,7 @@ impl State {
         });
 
         // ‼️ Create the base grid
-        let base_grid = create_vertex_grid(50, 50);
+        let base_grid = create_vertex_grid(75, 200);
         // ‼️ Create the mutable grid by cloning the base
         let animated_grid = base_grid.clone();
         // ‼️ Get the count from the grid's flat data
@@ -479,24 +489,34 @@ impl State {
 
     // ‼️ Updated function to use the Grid
     fn process_vertices(&mut self, &time: &f32) {
-        // ‼️ Iterate using 2D (x, y) coordinates
+        // ‼️ 1. Create a rotation matrix (rotating around Z-axis)
+        // We use Mat4 (4x4 matrix) as it's standard for 3D/GPU math
+        let rotation = Mat4::from_rotation_z(time * 0.5);
+
         for y in 0..self.base_grid.height() {
             for x in 0..self.base_grid.width() {
-                // ‼️ Get the original (base) vertex
                 let base_vertex = self.base_grid.get(x, y).unwrap();
                 let base_x = base_vertex.position[0];
                 let base_y = base_vertex.position[1];
 
-                // ‼️ This is where you would do your matrix transforms
-                // We just apply the same sine wave logic for now
-                let offset = 0.1 * f32::sin(base_x * 10.0 + base_y * 10.0 + time * 2.0);
+                // ‼️ 2. Convert 2D position to Vec4
+                // (x, y, z, w) - w=1.0 is crucial for translation/transformation
+                let base_pos_vec4 = Vec4::new(base_x, base_y, 0.0, 1.0);
 
-                // ‼️ Get a mutable reference to the corresponding animated vertex
+                // ‼️ 3. Apply the matrix transform
+                let rotated_pos = rotation * base_pos_vec4;
+
+                // ‼️ 4. Calculate the sine wave offset
+                // We use the *rotated* x/y to make the wave pattern move with the grid
+                let offset =
+                    0.1 * f32::sin(rotated_pos.x * 10.0 + rotated_pos.y * 10.0 + time * 2.0);
+
+                // ‼️ 5. Get the mutable vertex and set its new position
                 let anim_vertex = self.animated_grid.get_mut(x, y).unwrap();
 
-                // ‼️ Set its new position
-                anim_vertex.position[0] = base_x;
-                anim_vertex.position[1] = base_y + offset;
+                // We take the transformed x/y and add the offset to the y
+                anim_vertex.position[0] = rotated_pos.x;
+                anim_vertex.position[1] = rotated_pos.y + offset;
             }
         }
 
