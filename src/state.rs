@@ -29,54 +29,112 @@ impl Vertex {
     }
 }
 
-// fn create_vertices(num_vertices: u32) -> Vec<Vertex> {
-//     // TODO: Proper error handling when not enough vertices
-//     if num_vertices < 2 {
-//         return Vec::new(); // Need at least 2 vertices to form a line
-//     }
-//
-//     let mut vertices = Vec::with_capacity(num_vertices as usize);
-//     let step = 2.0 / (num_vertices as f32 - 1.0);
-//
-//     for i in 0..num_vertices {
-//         // Calculate the x-coordinate for the current vertex
-//         let x = -1.0 + (i as f32 * step);
-//         // Initialize y-coordinate to 0.0
-//         vertices.push(Vertex { position: [x, 0.0] });
-//     }
-//
-//     vertices
-// }
+// ‼️ New Grid struct
+#[derive(Debug)]
+pub struct Grid<T> {
+    data: Vec<T>,
+    width: u32,
+    height: u32,
+}
 
-fn create_vertices(points_per_axis: u32) -> Vec<Vertex> {
-    if points_per_axis == 0 {
-        return Vec::new();
-    }
-    // ‼️ Handle a single point
-    if points_per_axis == 1 {
-        return vec![Vertex {
-            position: [0.0, 0.0],
-        }];
+impl<T> Grid<T> {
+    /// Get an immutable reference to an item in the grid
+    pub fn get(&self, x: u32, y: u32) -> Option<&T> {
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        self.data.get((y * self.width + x) as usize)
     }
 
-    // ‼️ Calculate total vertices for the grid
-    let total_vertices = (points_per_axis * points_per_axis) as usize;
+    /// Get a mutable reference to an item in the grid
+    pub fn get_mut(&mut self, x: u32, y: u32) -> Option<&mut T> {
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        self.data.get_mut((y * self.width + x) as usize)
+    }
+
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Get a reference to the internal flat vector
+    pub fn as_flat_vec(&self) -> &Vec<T> {
+        &self.data
+    }
+}
+
+// ‼️ Clone implementation for our Grid (needed in State::new)
+impl<T: Clone> Clone for Grid<T> {
+    fn clone(&self) -> Self {
+        Self {
+            data: self.data.clone(),
+            width: self.width,
+            height: self.height,
+        }
+    }
+}
+
+// ‼️ Function now returns a Grid<Vertex>
+fn create_vertex_grid(points_x: u32, points_y: u32) -> Grid<Vertex> {
+    if points_x == 0 || points_y == 0 {
+        // ‼️ Return an empty grid
+        return Grid {
+            data: Vec::new(),
+            width: 0,
+            height: 0,
+        };
+    }
+
+    // Calculate total vertices for the grid
+    let total_vertices = (points_x * points_y) as usize;
     let mut vertices = Vec::with_capacity(total_vertices);
-    // ‼️ Calculate step size to span clip space from -1.0 to 1.0
-    let step = 2.0 / (points_per_axis as f32 - 1.0);
 
-    // ‼️ Use nested loops to generate grid points
-    for j in 0..points_per_axis {
+    // Calculate step size for each axis independently
+    // If only 1 point, step is 0 (it will be centered)
+    let step_x = if points_x > 1 {
+        2.0 / (points_x - 1) as f32
+    } else {
+        0.0
+    };
+    let step_y = if points_y > 1 {
+        2.0 / (points_y - 1) as f32
+    } else {
+        0.0
+    };
+
+    for j in 0..points_y {
         // Current y-coordinate
-        let y = -1.0 + (j as f32 * step);
-        for i in 0..points_per_axis {
+        // If 1 point, center it at 0.0, otherwise map from -1.0 to 1.0
+        let y = if points_y == 1 {
+            0.0
+        } else {
+            -1.0 + (j as f32 * step_y)
+        };
+
+        for i in 0..points_x {
             // Current x-coordinate
-            let x = -1.0 + (i as f32 * step);
+            // If 1 point, center it at 0.0, otherwise map from -1.0 to 1.0
+            let x = if points_x == 1 {
+                0.0
+            } else {
+                -1.0 + (i as f32 * step_x)
+            };
             vertices.push(Vertex { position: [x, y] });
         }
     }
-    vertices
+
+    // ‼️ Return the populated Grid struct
+    Grid {
+        data: vertices,
+        width: points_x,
+        height: points_y,
+    }
 }
+
 // Helper function to create the MSAA texture view
 fn create_msaa_view(
     device: &wgpu::Device,
@@ -108,8 +166,9 @@ pub struct State {
     is_surface_configured: bool,
     render_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
-    base_vertices: Vec<Vertex>,
-    animated_vertices: Vec<Vertex>,
+    // ‼️ Store vertices in Grid structs
+    animated_grid: Grid<Vertex>, // ‼️ This is mutated and its flat data sent to GPU
+    base_grid: Grid<Vertex>,     // ‼️ This is the static, original grid
     num_vertices: u32,
     window: Arc<Window>,
     start_time: Instant,
@@ -129,7 +188,6 @@ impl State {
             backends: wgpu::Backends::PRIMARY,
             ..Default::default()
         });
-
         let surface = instance.create_surface(window.clone()).unwrap();
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -139,6 +197,7 @@ impl State {
             })
             .await
             .unwrap();
+
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
@@ -164,7 +223,6 @@ impl State {
             .copied()
             .find(|mode| *mode == wgpu::PresentMode::Fifo)
             .unwrap_or(surface_caps.present_modes[0]);
-
         let desired_modes = [
             wgpu::CompositeAlphaMode::PostMultiplied,
             wgpu::CompositeAlphaMode::Auto,
@@ -181,9 +239,11 @@ impl State {
                     .find(|mode| *mode != wgpu::CompositeAlphaMode::Opaque)
                     .unwrap_or(surface_caps.alpha_modes[0])
             });
+
         if alpha_mode == wgpu::CompositeAlphaMode::Opaque {
             log::warn!("Surface does not support transparency, falling back to Opaque.");
         }
+
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
@@ -196,7 +256,6 @@ impl State {
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
-
         if size.width > 0 && size.height > 0 {
             surface.configure(&device, &config);
         }
@@ -287,13 +346,17 @@ impl State {
             cache: None,
         });
 
-        let base_vertices = create_vertices(50);
-        let animated_vertices = base_vertices.clone();
-        let num_vertices = base_vertices.len() as u32;
+        // ‼️ Create the base grid
+        let base_grid = create_vertex_grid(50, 50);
+        // ‼️ Create the mutable grid by cloning the base
+        let animated_grid = base_grid.clone();
+        // ‼️ Get the count from the grid's flat data
+        let num_vertices = animated_grid.as_flat_vec().len() as u32;
 
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Vertex Buffer"),
-            contents: bytemuck::cast_slice(&base_vertices),
+            // ‼️ Use the flat Vec from the animated_grid
+            contents: bytemuck::cast_slice(animated_grid.as_flat_vec()),
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
 
@@ -305,8 +368,8 @@ impl State {
             is_surface_configured: size.width > 0 && size.height > 0,
             render_pipeline,
             vertex_buffer,
-            base_vertices,
-            animated_vertices,
+            animated_grid, // ‼️
+            base_grid,     // ‼️
             num_vertices,
             window,
             start_time,
@@ -350,7 +413,7 @@ impl State {
         self.time_uniform.time = self.start_time.elapsed().as_secs_f32();
         let time = self.time_uniform.time;
 
-        self.process_vertices(&time);
+        self.process_vertices(&time); // Enable vertex processing
 
         self.queue.write_buffer(
             &self.time_buffer,
@@ -406,7 +469,6 @@ impl State {
         if delta.as_secs_f64() >= 1.0 {
             let fps = self.frame_count as f64 / delta.as_secs_f64();
             println!("FPS: {:.2}", fps);
-
             // Reset for the next interval
             self.frame_count = 0;
             self.last_update_time = now;
@@ -414,30 +476,35 @@ impl State {
 
         Ok(())
     }
+
+    // ‼️ Updated function to use the Grid
     fn process_vertices(&mut self, &time: &f32) {
-        // ‼️ Use the new, clearer names
-        for (base, anim) in self
-            .base_vertices
-            .iter()
-            .zip(self.animated_vertices.iter_mut())
-        {
-            let x = base.position[0];
-            let y = base.position[1];
+        // ‼️ Iterate using 2D (x, y) coordinates
+        for y in 0..self.base_grid.height() {
+            for x in 0..self.base_grid.width() {
+                // ‼️ Get the original (base) vertex
+                let base_vertex = self.base_grid.get(x, y).unwrap();
+                let base_x = base_vertex.position[0];
+                let base_y = base_vertex.position[1];
 
-            // Calculate an offset based on the original (x, y) grid position and time
-            // This creates a wave that respects the initial position
-            let offset = 0.1 * f32::sin(x * 10.0 + y * 10.0 + time * 2.0);
+                // ‼️ This is where you would do your matrix transforms
+                // We just apply the same sine wave logic for now
+                let offset = 0.1 * f32::sin(base_x * 10.0 + base_y * 10.0 + time * 2.0);
 
-            // Apply the offset to the original y-position
-            anim.position[0] = x; // Keep original x
-            anim.position[1] = y + offset; // Add the wave offset to the original y
+                // ‼️ Get a mutable reference to the corresponding animated vertex
+                let anim_vertex = self.animated_grid.get_mut(x, y).unwrap();
+
+                // ‼️ Set its new position
+                anim_vertex.position[0] = base_x;
+                anim_vertex.position[1] = base_y + offset;
+            }
         }
 
-        // Write the modified vertex data (self.animated_vertices) to the GPU buffer
+        // ‼️ Write the animated_grid's *flat data* to the GPU buffer
         self.queue.write_buffer(
             &self.vertex_buffer,
             0,
-            bytemuck::cast_slice(&self.animated_vertices),
+            bytemuck::cast_slice(self.animated_grid.as_flat_vec()),
         );
     }
 }
