@@ -1,7 +1,13 @@
-use glam::{Mat4, Vec4};
 use std::{iter, sync::Arc, time::Instant};
 use wgpu::util::DeviceExt;
 use winit::{event_loop::ActiveEventLoop, keyboard::KeyCode, window::Window};
+
+const POINTS_X: u32 = 50;
+const POINTS_Y: u32 = 50;
+// const TOTAL_VERTICES: u32 = POINTS_X * POINTS_Y;
+const COMPUTE_WORKGROUP_SIZE: u32 = 256;
+// This MUST match the amplitude in the shader
+const WAVE_AMPLITUDE: f32 = 0.1;
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -30,7 +36,6 @@ impl Vertex {
     }
 }
 
-// ‼️ New Grid struct
 #[derive(Debug)]
 pub struct Grid<T> {
     data: Vec<T>,
@@ -39,36 +44,32 @@ pub struct Grid<T> {
 }
 
 impl<T> Grid<T> {
-    /// Get an immutable reference to an item in the grid
-    pub fn get(&self, x: u32, y: u32) -> Option<&T> {
-        if x >= self.width || y >= self.height {
-            return None;
-        }
-        self.data.get((y * self.width + x) as usize)
-    }
+    // pub fn get(&self, x: u32, y: u32) -> Option<&T> {
+    //     if x >= self.width || y >= self.height {
+    //         return None;
+    //     }
+    //     self.data.get((y * self.width + x) as usize)
+    // }
+    //
+    // pub fn get_mut(&mut self, x: u32, y: u32) -> Option<&mut T> {
+    //     if x >= self.width || y >= self.height {
+    //         return None;
+    //     }
+    //     self.data.get_mut((y * self.width + x) as usize)
+    // }
+    //
+    // pub fn width(&self) -> u32 {
+    //     self.width
+    // }
+    // pub fn height(&self) -> u32 {
+    //     self.height
+    // }
 
-    /// Get a mutable reference to an item in the grid
-    pub fn get_mut(&mut self, x: u32, y: u32) -> Option<&mut T> {
-        if x >= self.width || y >= self.height {
-            return None;
-        }
-        self.data.get_mut((y * self.width + x) as usize)
-    }
-
-    pub fn width(&self) -> u32 {
-        self.width
-    }
-    pub fn height(&self) -> u32 {
-        self.height
-    }
-
-    /// Get a reference to the internal flat vector
     pub fn as_flat_vec(&self) -> &Vec<T> {
         &self.data
     }
 }
 
-// ‼️ Clone implementation for our Grid (needed in State::new)
 impl<T: Clone> Clone for Grid<T> {
     fn clone(&self) -> Self {
         Self {
@@ -81,7 +82,6 @@ impl<T: Clone> Clone for Grid<T> {
 
 fn create_vertex_grid(points_x: u32, points_y: u32) -> Grid<Vertex> {
     if points_x == 0 || points_y == 0 {
-        // Return an empty grid
         return Grid {
             data: Vec::new(),
             width: 0,
@@ -89,63 +89,48 @@ fn create_vertex_grid(points_x: u32, points_y: u32) -> Grid<Vertex> {
         };
     }
 
-    // ‼️ Define the buffer size.
-    // ‼️ sqrt(2) is the distance from the center (0,0) to the corner (1,1).
-
-    let additional_buffer = 0.1;
-    let grid_buffer = 2.0_f32.sqrt(); // approx 1.414
-                                      //
-    let buffer = grid_buffer + additional_buffer;
-
-    // ‼️ The total width/height of the grid will be from -buffer to +buffer.
+    let rotation_buffer = 2.0_f32.sqrt();
+    let buffer = rotation_buffer + WAVE_AMPLITUDE;
     let grid_range = buffer * 2.0;
 
-    // Calculate total vertices for the grid
     let total_vertices = (points_x * points_y) as usize;
     let mut vertices = Vec::with_capacity(total_vertices);
 
-    // Calculate step size for each axis independently
-    // If only 1 point, step is 0 (it will be centered)
     let step_x = if points_x > 1 {
-        grid_range / (points_x - 1) as f32 // ‼️ Use new grid_range
+        grid_range / (points_x - 1) as f32
     } else {
         0.0
     };
     let step_y = if points_y > 1 {
-        grid_range / (points_y - 1) as f32 // ‼️ Use new grid_range
+        grid_range / (points_y - 1) as f32
     } else {
         0.0
     };
 
     for j in 0..points_y {
-        // Current y-coordinate
-        // If 1 point, center it at 0.0, otherwise map from -buffer to +buffer
         let y = if points_y == 1 {
             0.0
         } else {
-            -buffer + (j as f32 * step_y) // ‼️ Start at -buffer
+            -buffer + (j as f32 * step_y)
         };
 
         for i in 0..points_x {
-            // Current x-coordinate
-            // If 1 point, center it at 0.0, otherwise map from -buffer to +buffer
             let x = if points_x == 1 {
                 0.0
             } else {
-                -buffer + (i as f32 * step_x) // ‼️ Start at -buffer
+                -buffer + (i as f32 * step_x)
             };
             vertices.push(Vertex { position: [x, y] });
         }
     }
 
-    // Return the populated Grid struct
     Grid {
         data: vertices,
         width: points_x,
         height: points_y,
     }
 }
-// Helper function to create the MSAA texture view
+
 fn create_msaa_view(
     device: &wgpu::Device,
     config: &wgpu::SurfaceConfiguration,
@@ -167,7 +152,6 @@ fn create_msaa_view(
     });
     msaa_texture.create_view(&wgpu::TextureViewDescriptor::default())
 }
-
 pub struct State {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
@@ -175,10 +159,13 @@ pub struct State {
     config: wgpu::SurfaceConfiguration,
     is_surface_configured: bool,
     render_pipeline: wgpu::RenderPipeline,
-    vertex_buffer: wgpu::Buffer,
-    // ‼️ Store vertices in Grid structs
-    animated_grid: Grid<Vertex>, // ‼️ This is mutated and its flat data sent to GPU
-    base_grid: Grid<Vertex>,     // ‼️ This is the static, original grid
+
+    // base_vertex_buffer: wgpu::Buffer,
+    animated_vertex_buffer: wgpu::Buffer,
+
+    compute_pipeline: wgpu::ComputePipeline,
+    compute_bind_group: wgpu::BindGroup,
+
     num_vertices: u32,
     window: Arc<Window>,
     start_time: Instant,
@@ -193,6 +180,7 @@ pub struct State {
 
 impl State {
     pub async fn new(window: Arc<Window>) -> anyhow::Result<State> {
+        // ... (instance, surface, adapter, device, queue setup - no changes) ...
         let size = window.inner_size();
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::PRIMARY,
@@ -219,7 +207,6 @@ impl State {
             })
             .await
             .unwrap();
-
         let surface_caps = surface.get_capabilities(&adapter);
         let surface_format = surface_caps
             .formats
@@ -227,41 +214,13 @@ impl State {
             .copied()
             .find(|f| f.is_srgb())
             .unwrap_or(surface_caps.formats[0]);
-        let present_mode = surface_caps
-            .present_modes
-            .iter()
-            .copied()
-            .find(|mode| *mode == wgpu::PresentMode::Fifo)
-            .unwrap_or(surface_caps.present_modes[0]);
-        let desired_modes = [
-            wgpu::CompositeAlphaMode::PostMultiplied,
-            wgpu::CompositeAlphaMode::Auto,
-            wgpu::CompositeAlphaMode::Inherit,
-        ];
-        let alpha_mode = desired_modes
-            .into_iter()
-            .find(|mode| surface_caps.alpha_modes.contains(mode))
-            .unwrap_or_else(|| {
-                surface_caps
-                    .alpha_modes
-                    .iter()
-                    .copied()
-                    .find(|mode| *mode != wgpu::CompositeAlphaMode::Opaque)
-                    .unwrap_or(surface_caps.alpha_modes[0])
-            });
-
-        if alpha_mode == wgpu::CompositeAlphaMode::Opaque {
-            log::warn!("Surface does not support transparency, falling back to Opaque.");
-        }
 
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
             width: size.width,
             height: size.height,
-            // present_mode,
             present_mode: surface_caps.present_modes[0],
-            // alpha_mode,
             alpha_mode: surface_caps.alpha_modes[0],
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
@@ -270,7 +229,6 @@ impl State {
             surface.configure(&device, &config);
         }
 
-        // Set sample count and create the initial MSAA view
         let msaa_sample_count = 4;
         let msaa_view = create_msaa_view(&device, &config, msaa_sample_count);
 
@@ -286,7 +244,8 @@ impl State {
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    // Time is used by COMPUTE and FRAGMENT
+                    visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -306,14 +265,104 @@ impl State {
             label: Some("time_bind_group"),
         });
 
+        //  --- Create GPU Buffers ---
+        let base_grid = create_vertex_grid(POINTS_X, POINTS_Y);
+        let base_vertices_data = base_grid.as_flat_vec();
+        let num_vertices = base_vertices_data.len() as u32;
+
+        // Create base vertex buffer (read-only for compute)
+        let base_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Base Vertex Buffer"),
+            contents: bytemuck::cast_slice(base_vertices_data),
+            // Must be STORAGE for compute shader input
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+
+        // Create animated vertex buffer (writable for compute, vertex for render)
+        let animated_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Animated Vertex Buffer"),
+            size: (base_vertices_data.len() * std::mem::size_of::<Vertex>()) as wgpu::BufferAddress,
+            // Must be STORAGE (for compute output) and VERTEX (for render input)
+            usage: wgpu::BufferUsages::VERTEX
+                | wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // --- Create Compute Pipeline ---
+
+        let compute_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Compute Bind Group Layout"),
+                entries: &[
+                    // @binding(0) base_vertices
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // @binding(1) animated_vertices
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
+        let compute_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Compute Bind Group"),
+            layout: &compute_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: base_vertex_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: animated_vertex_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         });
 
+        // --- Create Compute Pipeline ---
+        let compute_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Compute Pipeline Layout"),
+                // Group 0 is time, Group 1 is storage buffers
+                bind_group_layouts: &[&time_bind_group_layout, &compute_bind_group_layout],
+                push_constant_ranges: &[],
+            });
+
+        let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Compute Pipeline"),
+            layout: Some(&compute_pipeline_layout),
+            module: &shader,
+            entry_point: Some("cs_main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
+        // --- Create Render Pipeline ---
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
+                // Render pipeline only needs the time bind group
                 bind_group_layouts: &[&time_bind_group_layout],
                 push_constant_ranges: &[],
             });
@@ -324,7 +373,7 @@ impl State {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[Vertex::desc()],
+                buffers: &[Vertex::desc()], // Describes the animated_vertex_buffer
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -350,24 +399,10 @@ impl State {
             multisample: wgpu::MultisampleState {
                 count: msaa_sample_count,
                 mask: !0,
-                alpha_to_coverage_enabled: true, // Improves line anti-aliasing
+                alpha_to_coverage_enabled: true,
             },
             multiview: None,
             cache: None,
-        });
-
-        // ‼️ Create the base grid
-        let base_grid = create_vertex_grid(75, 200);
-        // ‼️ Create the mutable grid by cloning the base
-        let animated_grid = base_grid.clone();
-        // ‼️ Get the count from the grid's flat data
-        let num_vertices = animated_grid.as_flat_vec().len() as u32;
-
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Vertex Buffer"),
-            // ‼️ Use the flat Vec from the animated_grid
-            contents: bytemuck::cast_slice(animated_grid.as_flat_vec()),
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
 
         Ok(Self {
@@ -377,9 +412,13 @@ impl State {
             config,
             is_surface_configured: size.width > 0 && size.height > 0,
             render_pipeline,
-            vertex_buffer,
-            animated_grid, // ‼️
-            base_grid,     // ‼️
+
+            // ‼️ Set new fields
+            // base_vertex_buffer,
+            animated_vertex_buffer,
+            compute_pipeline,
+            compute_bind_group,
+
             num_vertices,
             window,
             start_time,
@@ -403,7 +442,6 @@ impl State {
             self.config.width = width;
             self.config.height = height;
             self.surface.configure(&self.device, &self.config);
-            // Recreate the MSAA view with the new size
             self.msaa_view = create_msaa_view(&self.device, &self.config, self.msaa_sample_count);
         }
     }
@@ -419,11 +457,8 @@ impl State {
             return Ok(());
         }
 
-        // Update the time uniform before rendering
+        // Update time
         self.time_uniform.time = self.start_time.elapsed().as_secs_f32();
-        let time = self.time_uniform.time;
-
-        self.process_vertices(&time); // Enable vertex processing
 
         self.queue.write_buffer(
             &self.time_buffer,
@@ -443,16 +478,30 @@ impl State {
             });
 
         {
+            //  --- Compute Pass ---
+            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Compute Pass"),
+                timestamp_writes: None,
+            });
+            compute_pass.set_pipeline(&self.compute_pipeline);
+            compute_pass.set_bind_group(0, &self.time_bind_group, &[]);
+            compute_pass.set_bind_group(1, &self.compute_bind_group, &[]);
+            // Calculate number of workgroups needed
+            let workgroup_count_x =
+                (self.num_vertices as f32 / COMPUTE_WORKGROUP_SIZE as f32).ceil() as u32;
+            compute_pass.dispatch_workgroups(workgroup_count_x, 1, 1);
+        }
+
+        {
+            // --- Render Pass ---
+            // Note: Using *same encoder*
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    // Render to the multisampled texture view
                     view: &self.msaa_view,
-                    // Resolve to the swapchain texture view
                     resolve_target: Some(&view),
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        // Discard the multisampled texture's contents after resolving
                         store: wgpu::StoreOp::Discard,
                     },
                     depth_slice: None,
@@ -464,67 +513,26 @@ impl State {
 
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, &self.time_bind_group, &[]);
-            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            // Use the ANIMATED vertex buffer as the source
+            render_pass.set_vertex_buffer(0, self.animated_vertex_buffer.slice(..));
             render_pass.draw(0..self.num_vertices, 0..1);
         }
 
+        // Submit both passes at once
         self.queue.submit(iter::once(encoder.finish()));
         output.present();
 
+        // ... (FPS counter remains the same) ...
         self.frame_count += 1;
         let now = Instant::now();
         let delta = now.duration_since(self.last_update_time);
-
-        // Update and log FPS every 1 second
         if delta.as_secs_f64() >= 1.0 {
             let fps = self.frame_count as f64 / delta.as_secs_f64();
             println!("FPS: {:.2}", fps);
-            // Reset for the next interval
             self.frame_count = 0;
             self.last_update_time = now;
         }
 
         Ok(())
-    }
-
-    // ‼️ Updated function to use the Grid
-    fn process_vertices(&mut self, &time: &f32) {
-        // ‼️ 1. Create a rotation matrix (rotating around Z-axis)
-        // We use Mat4 (4x4 matrix) as it's standard for 3D/GPU math
-        let rotation = Mat4::from_rotation_z(time * 0.5);
-
-        for y in 0..self.base_grid.height() {
-            for x in 0..self.base_grid.width() {
-                let base_vertex = self.base_grid.get(x, y).unwrap();
-                let base_x = base_vertex.position[0];
-                let base_y = base_vertex.position[1];
-
-                // ‼️ 2. Convert 2D position to Vec4
-                // (x, y, z, w) - w=1.0 is crucial for translation/transformation
-                let base_pos_vec4 = Vec4::new(base_x, base_y, 0.0, 1.0);
-
-                // ‼️ 3. Apply the matrix transform
-                let rotated_pos = rotation * base_pos_vec4;
-
-                // ‼️ 4. Calculate the sine wave offset
-                // We use the *rotated* x/y to make the wave pattern move with the grid
-                let offset =
-                    0.1 * f32::sin(rotated_pos.x * 10.0 + rotated_pos.y * 10.0 + time * 2.0);
-
-                // ‼️ 5. Get the mutable vertex and set its new position
-                let anim_vertex = self.animated_grid.get_mut(x, y).unwrap();
-
-                // We take the transformed x/y and add the offset to the y
-                anim_vertex.position[0] = rotated_pos.x;
-                anim_vertex.position[1] = rotated_pos.y + offset;
-            }
-        }
-
-        // ‼️ Write the animated_grid's *flat data* to the GPU buffer
-        self.queue.write_buffer(
-            &self.vertex_buffer,
-            0,
-            bytemuck::cast_slice(self.animated_grid.as_flat_vec()),
-        );
     }
 }
