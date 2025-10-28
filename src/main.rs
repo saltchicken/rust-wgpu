@@ -11,6 +11,15 @@ use winit::{
 mod state;
 use state::State;
 
+mod vertex;
+use vertex::create_vertex_grid;
+
+const POINTS_X: u32 = 50;
+const POINTS_Y: u32 = 50;
+const COMPUTE_WORKGROUP_SIZE: u32 = 256;
+
+const SHADER_NAME: &str = "julia.wgsl";
+
 struct App {
     state: Option<State>,
 }
@@ -36,7 +45,17 @@ impl ApplicationHandler for App {
             .with_transparent(true);
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
 
-        self.state = Some(pollster::block_on(State::new(window)).unwrap());
+        let base_grid = create_vertex_grid(POINTS_X, POINTS_Y);
+
+        self.state = Some(
+            pollster::block_on(State::new(
+                window,
+                base_grid,
+                COMPUTE_WORKGROUP_SIZE,
+                SHADER_NAME,
+            ))
+            .unwrap(),
+        );
     }
 
     fn window_event(

@@ -1,16 +1,9 @@
-use std::{iter, sync::Arc, time::Instant};
+use std::{fs, iter, sync::Arc, time::Instant};
+
 use wgpu::util::DeviceExt;
 use winit::{event_loop::ActiveEventLoop, keyboard::KeyCode, window::Window};
 
-mod vertex;
-use vertex::{create_vertex_grid, Grid, Vertex};
-
-const POINTS_X: u32 = 50;
-const POINTS_Y: u32 = 50;
-// const TOTAL_VERTICES: u32 = POINTS_X * POINTS_Y;
-const COMPUTE_WORKGROUP_SIZE: u32 = 256;
-// This MUST match the amplitude in the shader
-const WAVE_AMPLITUDE: f32 = 0.1;
+use crate::vertex::{Grid, Vertex};
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -53,6 +46,7 @@ pub struct State {
 
     compute_pipeline: wgpu::ComputePipeline,
     compute_bind_group: wgpu::BindGroup,
+    compute_workgroup_size: u32,
 
     num_vertices: u32,
     window: Arc<Window>,
@@ -67,7 +61,12 @@ pub struct State {
 }
 
 impl State {
-    pub async fn new(window: Arc<Window>) -> anyhow::Result<State> {
+    pub async fn new(
+        window: Arc<Window>,
+        base_grid: Grid<Vertex>,
+        compute_workgroup_size: u32,
+        shader_name: &str,
+    ) -> anyhow::Result<State> {
         // ... (instance, surface, adapter, device, queue setup - no changes) ...
         let size = window.inner_size();
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
@@ -154,7 +153,6 @@ impl State {
         });
 
         //  --- Create GPU Buffers ---
-        let base_grid = create_vertex_grid(POINTS_X, POINTS_Y);
         let base_vertices_data = base_grid.as_flat_vec();
         let num_vertices = base_vertices_data.len() as u32;
 
@@ -223,9 +221,11 @@ impl State {
             ],
         });
 
+        let shader_source = fs::read_to_string(shader_name).unwrap();
+
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
+            label: Some(shader_name),
+            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
         });
 
         // --- Create Compute Pipeline ---
@@ -306,6 +306,7 @@ impl State {
             animated_vertex_buffer,
             compute_pipeline,
             compute_bind_group,
+            compute_workgroup_size,
 
             num_vertices,
             window,
@@ -396,7 +397,7 @@ impl State {
             compute_pass.set_bind_group(1, &self.compute_bind_group, &[]);
             // Calculate number of workgroups needed
             let workgroup_count_x =
-                (self.num_vertices as f32 / COMPUTE_WORKGROUP_SIZE as f32).ceil() as u32;
+                (self.num_vertices as f32 / self.compute_workgroup_size as f32).ceil() as u32;
             compute_pass.dispatch_workgroups(workgroup_count_x, 1, 1);
         }
 
