@@ -2,6 +2,9 @@ use std::{iter, sync::Arc, time::Instant};
 use wgpu::util::DeviceExt;
 use winit::{event_loop::ActiveEventLoop, keyboard::KeyCode, window::Window};
 
+mod vertex;
+use vertex::{create_vertex_grid, Grid, Vertex};
+
 const POINTS_X: u32 = 50;
 const POINTS_Y: u32 = 50;
 // const TOTAL_VERTICES: u32 = POINTS_X * POINTS_Y;
@@ -13,122 +16,6 @@ const WAVE_AMPLITUDE: f32 = 0.1;
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct TimeUniform {
     time: f32,
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-struct Vertex {
-    position: [f32; 2],
-}
-
-impl Vertex {
-    pub fn desc() -> wgpu::VertexBufferLayout<'static> {
-        use std::mem;
-        wgpu::VertexBufferLayout {
-            array_stride: mem::size_of::<Vertex>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[wgpu::VertexAttribute {
-                offset: 0,
-                shader_location: 0,
-                format: wgpu::VertexFormat::Float32x2,
-            }],
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct Grid<T> {
-    data: Vec<T>,
-    width: u32,
-    height: u32,
-}
-
-impl<T> Grid<T> {
-    pub fn get(&self, x: u32, y: u32) -> Option<&T> {
-        if x >= self.width || y >= self.height {
-            return None;
-        }
-        self.data.get((y * self.width + x) as usize)
-    }
-
-    pub fn get_mut(&mut self, x: u32, y: u32) -> Option<&mut T> {
-        if x >= self.width || y >= self.height {
-            return None;
-        }
-        self.data.get_mut((y * self.width + x) as usize)
-    }
-
-    pub fn width(&self) -> u32 {
-        self.width
-    }
-    pub fn height(&self) -> u32 {
-        self.height
-    }
-
-    pub fn as_flat_vec(&self) -> &Vec<T> {
-        &self.data
-    }
-}
-
-impl<T: Clone> Clone for Grid<T> {
-    fn clone(&self) -> Self {
-        Self {
-            data: self.data.clone(),
-            width: self.width,
-            height: self.height,
-        }
-    }
-}
-
-fn create_vertex_grid(points_x: u32, points_y: u32) -> Grid<Vertex> {
-    if points_x == 0 || points_y == 0 {
-        return Grid {
-            data: Vec::new(),
-            width: 0,
-            height: 0,
-        };
-    }
-
-    let rotation_buffer = 2.0_f32.sqrt();
-    let buffer = rotation_buffer + WAVE_AMPLITUDE;
-    let grid_range = buffer * 2.0;
-
-    let total_vertices = (points_x * points_y) as usize;
-    let mut vertices = Vec::with_capacity(total_vertices);
-
-    let step_x = if points_x > 1 {
-        grid_range / (points_x - 1) as f32
-    } else {
-        0.0
-    };
-    let step_y = if points_y > 1 {
-        grid_range / (points_y - 1) as f32
-    } else {
-        0.0
-    };
-
-    for j in 0..points_y {
-        let y = if points_y == 1 {
-            0.0
-        } else {
-            -buffer + (j as f32 * step_y)
-        };
-
-        for i in 0..points_x {
-            let x = if points_x == 1 {
-                0.0
-            } else {
-                -buffer + (i as f32 * step_x)
-            };
-            vertices.push(Vertex { position: [x, y] });
-        }
-    }
-
-    Grid {
-        data: vertices,
-        width: points_x,
-        height: points_y,
-    }
 }
 
 fn create_msaa_view(
@@ -434,26 +321,21 @@ impl State {
     }
 
     pub fn modify_base_vertex(&mut self, x: u32, y: u32, new_pos: [f32; 2]) {
-        // 1. Get width *before* the mutable borrow to avoid the error
-        let width = self.base_grid.width();
-
-        // 2. Update the CPU-side grid
-        if let Some(vertex) = self.base_grid.get_mut(x, y) {
-            vertex.position = new_pos;
-
-            // 3. Calculate the byte offset in the GPU buffer
+        // Update the CPU-side grid and get the change
+        if let Some((updated_vertex, index)) = self.base_grid.update_vertex(x, y, new_pos) {
+            // Calculate the byte offset in the GPU buffer
             let vertex_size = std::mem::size_of::<Vertex>() as wgpu::BufferAddress;
-            // Use the `width` variable here
-            let offset = (y * width + x) as wgpu::BufferAddress * vertex_size;
+            let offset = index as wgpu::BufferAddress * vertex_size;
 
-            // 4. Write just this one vertex's data to the GPU buffer
+            // Write just this one vertex's data to the GPU buffer
             self.queue.write_buffer(
                 &self.base_vertex_buffer,
                 offset,
-                bytemuck::cast_slice(&[*vertex]), // Create a slice containing one copied vertex
+                bytemuck::cast_slice(&[updated_vertex]), // Use the returned vertex
             );
         }
     }
+
     pub fn window(&self) -> &Window {
         &self.window
     }
