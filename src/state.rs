@@ -321,21 +321,21 @@ impl State {
         })
     }
 
-    pub fn modify_base_vertex(&mut self, x: u32, y: u32, new_pos: [f32; 2]) {
-        // Update the CPU-side grid and get the change
-        if let Some((updated_vertex, index)) = self.base_grid.update_vertex(x, y, new_pos) {
-            // Calculate the byte offset in the GPU buffer
-            let vertex_size = std::mem::size_of::<Vertex>() as wgpu::BufferAddress;
-            let offset = index as wgpu::BufferAddress * vertex_size;
-
-            // Write just this one vertex's data to the GPU buffer
-            self.queue.write_buffer(
-                &self.base_vertex_buffer,
-                offset,
-                bytemuck::cast_slice(&[updated_vertex]), // Use the returned vertex
-            );
-        }
-    }
+    // pub fn modify_base_vertex(&mut self, x: u32, y: u32, new_pos: [f32; 2]) {
+    //     // Update the CPU-side grid and get the change
+    //     if let Some((updated_vertex, index)) = self.base_grid.update_vertex(x, y, new_pos) {
+    //         // Calculate the byte offset in the GPU buffer
+    //         let vertex_size = std::mem::size_of::<Vertex>() as wgpu::BufferAddress;
+    //         let offset = index as wgpu::BufferAddress * vertex_size;
+    //
+    //         // Write just this one vertex's data to the GPU buffer
+    //         self.queue.write_buffer(
+    //             &self.base_vertex_buffer,
+    //             offset,
+    //             bytemuck::cast_slice(&[updated_vertex]), // Use the returned vertex
+    //         );
+    //     }
+    // }
 
     pub fn window(&self) -> &Window {
         &self.window
@@ -355,10 +355,10 @@ impl State {
         if key == KeyCode::Escape && pressed {
             event_loop.exit();
         }
-        //NOTE: This is just a random test
-        if key == KeyCode::Space && pressed {
-            self.modify_base_vertex(25, 25, [f32::NAN, f32::NAN]);
-        }
+        ////NOTE: This is just a random test
+        //if key == KeyCode::Space && pressed {
+        //    self.modify_base_vertex(25, 25, [f32::NAN, f32::NAN]);
+        //}
     }
 
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {

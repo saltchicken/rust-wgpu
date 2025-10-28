@@ -1,3 +1,4 @@
+use clap::{Parser, ValueEnum};
 use std::sync::Arc;
 use winit::{
     application::ApplicationHandler,
@@ -14,19 +15,58 @@ use state::State;
 mod vertex;
 use vertex::create_vertex_grid;
 
-const POINTS_X: u32 = 50;
-const POINTS_Y: u32 = 50;
 const COMPUTE_WORKGROUP_SIZE: u32 = 256;
 
-const SHADER_NAME: &str = "julia.wgsl";
+#[derive(ValueEnum, Clone, Debug, Default)]
+enum ShaderChoice {
+    #[default]
+    #[value(name = "affine-rotate")]
+    AffineRotate,
 
+    #[value(name = "julia")]
+    Julia,
+
+    #[value(name = "shader")]
+    Shader,
+
+    #[value(name = "shader2")]
+    Shader2,
+}
+
+impl ShaderChoice {
+    fn as_path(&self) -> &'static str {
+        match self {
+            ShaderChoice::AffineRotate => "shaders/affine_rotate.wgsl",
+            ShaderChoice::Julia => "shaders/julia.wgsl",
+            ShaderChoice::Shader => "shaders/shader.wgsl",
+            ShaderChoice::Shader2 => "shaders/shader2.wgsl",
+        }
+    }
+}
+
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    /// Path to the WGSL shader file
+    #[arg(short, long, default_value = "affine-rotate")]
+    shader_name: ShaderChoice,
+
+    /// Number of points on the X-axis
+    #[arg(short = 'x', long, default_value_t = 50)]
+    points_x: u32,
+
+    /// Number of points on the Y-axis
+    #[arg(short = 'y', long, default_value_t = 50)]
+    points_y: u32,
+}
 struct App {
     state: Option<State>,
+    args: Args,
 }
 
 impl App {
-    pub fn new() -> Self {
-        Self { state: None }
+    pub fn new(args: Args) -> Self {
+        Self { state: None, args }
     }
 }
 
@@ -45,14 +85,15 @@ impl ApplicationHandler for App {
             .with_transparent(true);
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
 
-        let base_grid = create_vertex_grid(POINTS_X, POINTS_Y);
+        let base_grid = create_vertex_grid(self.args.points_x, self.args.points_y);
+        println!("{}", self.args.shader_name.as_path());
 
         self.state = Some(
             pollster::block_on(State::new(
                 window,
                 base_grid,
                 COMPUTE_WORKGROUP_SIZE,
-                SHADER_NAME,
+                self.args.shader_name.as_path(),
             ))
             .unwrap(),
         );
@@ -100,8 +141,9 @@ impl ApplicationHandler for App {
 
 fn main() -> anyhow::Result<()> {
     env_logger::init();
+    let args = Args::parse();
     let event_loop = EventLoop::new()?;
-    let mut app = App::new();
+    let mut app = App::new(args);
     event_loop.run_app(&mut app)?;
     Ok(())
 }
