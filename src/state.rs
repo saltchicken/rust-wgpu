@@ -11,6 +11,8 @@ struct TimeUniform {
     time: f32,
 }
 
+const COMPUTE_WORKGROUP_SIZE: u32 = 256;
+
 fn create_msaa_view(
     device: &wgpu::Device,
     config: &wgpu::SurfaceConfiguration,
@@ -46,7 +48,6 @@ pub struct State {
 
     compute_pipeline: wgpu::ComputePipeline,
     compute_bind_group: wgpu::BindGroup,
-    compute_workgroup_size: u32,
 
     num_vertices: u32,
     window: Arc<Window>,
@@ -64,7 +65,6 @@ impl State {
     pub async fn new(
         window: Arc<Window>,
         base_grid: Grid<Vertex>,
-        compute_workgroup_size: u32,
         shader_name: &str,
     ) -> anyhow::Result<State> {
         // ... (instance, surface, adapter, device, queue setup - no changes) ...
@@ -306,7 +306,6 @@ impl State {
             animated_vertex_buffer,
             compute_pipeline,
             compute_bind_group,
-            compute_workgroup_size,
 
             num_vertices,
             window,
@@ -397,7 +396,7 @@ impl State {
             compute_pass.set_bind_group(1, &self.compute_bind_group, &[]);
             // Calculate number of workgroups needed
             let workgroup_count_x =
-                (self.num_vertices as f32 / self.compute_workgroup_size as f32).ceil() as u32;
+                (self.num_vertices as f32 / COMPUTE_WORKGROUP_SIZE as f32).ceil() as u32;
             compute_pass.dispatch_workgroups(workgroup_count_x, 1, 1);
         }
 

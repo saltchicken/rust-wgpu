@@ -15,8 +15,6 @@ use state::State;
 mod vertex;
 use vertex::create_vertex_grid;
 
-const COMPUTE_WORKGROUP_SIZE: u32 = 256;
-
 #[derive(ValueEnum, Clone, Debug, Default)]
 enum ShaderChoice {
     #[default]
@@ -92,7 +90,6 @@ impl ApplicationHandler for App {
             pollster::block_on(State::new(
                 window,
                 base_grid,
-                COMPUTE_WORKGROUP_SIZE,
                 self.args.shader_name.as_path(),
             ))
             .unwrap(),
