@@ -96,6 +96,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let g = sin(dist_from_origin * 0.5 + u_time.time * 0.5) * 0.5 + 0.5;
     let b = 1.0 - r;
 
-    return vec4<f32>(r, g, b, 1.0); // Colorful!
+    let intensity = 0.1;
+    return vec4<f32>(r * intensity, g * intensity, b * intensity, 1.0);
 }
 

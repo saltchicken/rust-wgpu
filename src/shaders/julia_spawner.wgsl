@@ -48,7 +48,7 @@ fn cs_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // ‼️ 1. Get 'c' from the *single input point*.
     // We animate it slightly around this point for a cool effect.
     let t = u_time.time * 0.3;
-    let c_offset = vec2<f32>(sin(t) * 0.005, cos(t) * 0.005);
+    let c_offset = vec2<f32>(sin(t) * 0.05, cos(t) * 0.05);
     let c = base_vertices[0].position + c_offset;
 
     // ‼️ 2. Generate a "virtual" starting grid point (z0) based on the particle's index.
@@ -105,6 +105,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let g = sin(in.world_pos.y * 2.0) * 0.5 + 0.5;
     let b = 1.0 - g;
 
-    return vec4<f32>(r, g, b, 1.0);
+    let intensity = 0.1;
+    return vec4<f32>(r * intensity, g * intensity, b * intensity, 1.0);
 }
 
