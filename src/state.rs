@@ -43,8 +43,8 @@ pub struct State {
     render_pipeline: wgpu::RenderPipeline,
 
     // base_grid: Grid<Vertex>,
-    // base_vertex_buffer: wgpu::Buffer,
-    animated_vertex_buffer: wgpu::Buffer,
+    base_vertex_buffer: wgpu::Buffer,
+    vertex_buffer: wgpu::Buffer,
 
     compute_pipeline: wgpu::ComputePipeline,
     compute_bind_group: wgpu::BindGroup,
@@ -164,9 +164,9 @@ impl State {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
-        // Create animated vertex buffer (writable for compute, vertex for render)
-        let animated_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Animated Vertex Buffer"),
+        // Create vertex buffer (writable for compute, vertex for render)
+        let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Vertex Buffer"),
             size: (num_output_vertices as usize * std::mem::size_of::<Vertex>())
                 as wgpu::BufferAddress,
             // Must be STORAGE (for compute output) and VERTEX (for render input)
@@ -193,7 +193,7 @@ impl State {
                         },
                         count: None,
                     },
-                    // @binding(1) animated_vertices
+                    // @binding(1) vertex_buffer
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
                         visibility: wgpu::ShaderStages::COMPUTE,
@@ -217,7 +217,7 @@ impl State {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: animated_vertex_buffer.as_entire_binding(),
+                    resource: vertex_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -262,7 +262,7 @@ impl State {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[Vertex::desc()], // Describes the animated_vertex_buffer
+                buffers: &[Vertex::desc()], // Describes the vertex_buffer
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -315,8 +315,8 @@ impl State {
             render_pipeline,
 
             // base_grid,
-            // base_vertex_buffer,
-            animated_vertex_buffer,
+            base_vertex_buffer,
+            vertex_buffer: vertex_buffer,
             compute_pipeline,
             compute_bind_group,
 
@@ -434,8 +434,7 @@ impl State {
 
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, &self.time_bind_group, &[]);
-            // Use the ANIMATED vertex buffer as the source
-            render_pass.set_vertex_buffer(0, self.animated_vertex_buffer.slice(..));
+            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.draw(0..self.num_vertices, 0..1);
         }
 
