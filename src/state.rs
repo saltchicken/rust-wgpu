@@ -1,3 +1,4 @@
+use glam::{Mat4, Vec3};
 use std::{fs, iter, sync::Arc, time::Instant};
 
 use wgpu::util::DeviceExt;
@@ -7,11 +8,74 @@ use crate::vertex::{Grid, Vertex};
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct CameraUniform {
+    // ‼️ We store view and projection matrices
+    view: [[f32; 4]; 4],
+    proj: [[f32; 4]; 4],
+}
+
+impl CameraUniform {
+    fn new() -> Self {
+        Self {
+            view: Mat4::IDENTITY.to_cols_array_2d(),
+            proj: Mat4::IDENTITY.to_cols_array_2d(),
+        }
+    }
+}
+
+struct Camera {
+    eye: Vec3,
+    target: Vec3,
+    up: Vec3,
+    aspect: f32,
+    fovy: f32,
+    znear: f32,
+    zfar: f32,
+}
+
+impl Camera {
+    fn build_view_projection_matrix(&self) -> CameraUniform {
+        let view = Mat4::look_at_rh(self.eye, self.target, self.up);
+        let proj = Mat4::perspective_rh(self.fovy.to_radians(), self.aspect, self.znear, self.zfar);
+        CameraUniform {
+            view: view.to_cols_array_2d(),
+            proj: proj.to_cols_array_2d(),
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct TimeUniform {
     time: f32,
 }
 
-const COMPUTE_WORKGROUP_SIZE: u32 = 256;
+const COMPUTE_WORKGROUP_SIZE: u32 = 512;
+
+fn create_depth_texture(
+    device: &wgpu::Device,
+    config: &wgpu::SurfaceConfiguration,
+    sample_count: u32,
+    label: &str,
+) -> wgpu::TextureView {
+    let size = wgpu::Extent3d {
+        width: config.width,
+        height: config.height,
+        depth_or_array_layers: 1,
+    };
+    let desc = wgpu::TextureDescriptor {
+        label: Some(label),
+        size,
+        mip_level_count: 1,
+        sample_count,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Depth32Float, // ‼️ Depth format
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT, // ‼️ Must be a render attachment
+        view_formats: &[],
+    };
+    let texture = device.create_texture(&desc);
+    texture.create_view(&wgpu::TextureViewDescriptor::default())
+}
 
 fn create_msaa_view(
     device: &wgpu::Device,
@@ -59,6 +123,12 @@ pub struct State {
     frame_count: u32,
     msaa_sample_count: u32,
     msaa_view: wgpu::TextureView,
+
+    camera: Camera,
+    camera_uniform: CameraUniform,
+    camera_buffer: wgpu::Buffer,
+    camera_bind_group: wgpu::BindGroup,
+    depth_view: wgpu::TextureView,
 }
 
 impl State {
@@ -118,6 +188,8 @@ impl State {
         }
 
         let msaa_sample_count = 4;
+        let depth_view = create_depth_texture(&device, &config, msaa_sample_count, "depth_texture");
+
         let msaa_view = create_msaa_view(&device, &config, msaa_sample_count);
 
         let start_time = Instant::now();
@@ -151,6 +223,44 @@ impl State {
                 resource: time_buffer.as_entire_binding(),
             }],
             label: Some("time_bind_group"),
+        });
+        let camera = Camera {
+            eye: Vec3::new(0.0, 2.5, 3.0), // ‼️ Position camera to look at the grid
+            target: Vec3::ZERO,
+            up: Vec3::Y,
+            aspect: config.width as f32 / config.height as f32,
+            fovy: 45.0,
+            znear: 0.1,
+            zfar: 100.0,
+        };
+
+        let camera_uniform = camera.build_view_projection_matrix();
+        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Camera Buffer"),
+            contents: bytemuck::cast_slice(&[camera_uniform]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let camera_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX, // ‼️ Only used by vertex shader
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+                label: Some("camera_bind_group_layout"),
+            });
+        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &camera_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: camera_buffer.as_entire_binding(),
+            }],
+            label: Some("camera_bind_group"),
         });
 
         //  --- Create GPU Buffers ---
@@ -252,7 +362,7 @@ impl State {
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
                 // Render pipeline only needs the time bind group
-                bind_group_layouts: &[&time_bind_group_layout],
+                bind_group_layouts: &[&time_bind_group_layout, &camera_bind_group_layout],
                 push_constant_ranges: &[],
             });
 
@@ -296,7 +406,13 @@ impl State {
                 unclipped_depth: false,
                 conservative: false,
             },
-            depth_stencil: None,
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less, // ‼️ Standard depth test
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
             multisample: wgpu::MultisampleState {
                 count: msaa_sample_count,
                 mask: !0,
@@ -316,7 +432,7 @@ impl State {
 
             // base_grid,
             base_vertex_buffer,
-            vertex_buffer: vertex_buffer,
+            vertex_buffer,
             compute_pipeline,
             compute_bind_group,
 
@@ -330,6 +446,11 @@ impl State {
             msaa_view,
             last_update_time: Instant::now(),
             frame_count: 0,
+            camera,
+            camera_uniform,
+            camera_buffer,
+            camera_bind_group,
+            depth_view,
         })
     }
 
@@ -360,6 +481,15 @@ impl State {
             self.config.height = height;
             self.surface.configure(&self.device, &self.config);
             self.msaa_view = create_msaa_view(&self.device, &self.config, self.msaa_sample_count);
+            // ‼️ Recreate depth texture on resize
+            self.depth_view = create_depth_texture(
+                &self.device,
+                &self.config,
+                self.msaa_sample_count,
+                "depth_texture",
+            );
+            // ‼️ Update camera aspect ratio
+            self.camera.aspect = self.config.width as f32 / self.config.height as f32;
         }
     }
 
@@ -385,6 +515,12 @@ impl State {
             &self.time_buffer,
             0,
             bytemuck::cast_slice(&[self.time_uniform]),
+        );
+        self.camera_uniform = self.camera.build_view_projection_matrix();
+        self.queue.write_buffer(
+            &self.camera_buffer,
+            0,
+            bytemuck::cast_slice(&[self.camera_uniform]),
         );
 
         let output = self.surface.get_current_texture()?;
@@ -427,13 +563,23 @@ impl State {
                     },
                     depth_slice: None,
                 })],
-                depth_stencil_attachment: None,
+
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0), // ‼️ Clear depth to 1.0 (far)
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
+                }),
+
                 occlusion_query_set: None,
                 timestamp_writes: None,
             });
 
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, &self.time_bind_group, &[]);
+            render_pass.set_bind_group(1, &self.camera_bind_group, &[]); // ‼️ Group 1
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.draw(0..self.num_vertices, 0..1);
         }

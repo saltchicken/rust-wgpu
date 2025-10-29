@@ -28,6 +28,10 @@ pub enum InputCommand {
         /// Number of points on the Y-axis
         #[arg(short = 'y', long, default_value_t = 50)]
         points_y: u32,
+        #[arg(long, default_value_t = 0.1)]
+        step_x: f32,
+        #[arg(long, default_value_t = 0.1)]
+        step_y: f32,
     },
     /// Generate a single point
     Point {

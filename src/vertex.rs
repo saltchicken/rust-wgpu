@@ -1,13 +1,12 @@
 use bytemuck::{Pod, Zeroable};
 use wgpu;
-
-// This MUST match the amplitude in the shader
-pub const WAVE_AMPLITUDE: f32 = 0.1;
+// ‼️ This const is no longer needed here, the shader controls the amplitude
+// pub const WAVE_AMPLITUDE: f32 = 0.1;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct Vertex {
-    pub position: [f32; 2],
+    pub position: [f32; 3], // ‼️ Changed from [f32; 2]
 }
 
 impl Vertex {
@@ -19,7 +18,7 @@ impl Vertex {
             attributes: &[wgpu::VertexAttribute {
                 offset: 0,
                 shader_location: 0,
-                format: wgpu::VertexFormat::Float32x2,
+                format: wgpu::VertexFormat::Float32x3, // ‼️ Changed from Float32x2
             }],
         }
     }
@@ -33,33 +32,11 @@ pub struct Grid<T> {
 }
 
 impl<T> Grid<T> {
-    // pub fn get(&self, x: u32, y: u32) -> Option<&T> {
-    //     if x >= self.width || y >= self.height {
-    //         return None;
-    //     }
-    //     self.data.get((y * self.width + x) as usize)
-    // }
-    //
-    // pub fn get_mut(&mut self, x: u32, y: u32) -> Option<&mut T> {
-    //     if x >= self.width || y >= self.height {
-    //         return None;
-    //     }
-    //     self.data.get_mut((y * self.width + x) as usize)
-    // }
-    //
-    // pub fn width(&self) -> u32 {
-    //     self.width
-    // }
-    //
-    // pub fn height(&self) -> u32 {
-    //     self.height
-    // }
-
+    // ... (no changes to Grid impl methods) ...
     pub fn as_flat_vec(&self) -> &Vec<T> {
         &self.data
     }
 }
-
 // impl Grid<Vertex> {
 //     /// Updates a vertex on the CPU grid and returns the modified vertex
 //     /// and its flat index for GPU synchronization.
@@ -87,16 +64,18 @@ impl<T: Clone> Clone for Grid<T> {
         }
     }
 }
-
 pub fn create_single_point(pos: [f32; 2]) -> Grid<Vertex> {
     Grid {
-        data: vec![Vertex { position: pos }],
+        // ‼️ Create a 3D point on the X-Z plane
+        data: vec![Vertex {
+            position: [pos[0], 0.0, pos[1]],
+        }],
         width: 1,
         height: 1,
     }
 }
 
-pub fn create_vertex_grid(points_x: u32, points_y: u32) -> Grid<Vertex> {
+pub fn create_vertex_grid(points_x: u32, points_y: u32, step_x: f32, step_y: f32) -> Grid<Vertex> {
     if points_x == 0 || points_y == 0 {
         return Grid {
             data: Vec::new(),
@@ -105,39 +84,19 @@ pub fn create_vertex_grid(points_x: u32, points_y: u32) -> Grid<Vertex> {
         };
     }
 
-    let rotation_buffer = 2.0_f32.sqrt();
-    let buffer = rotation_buffer + WAVE_AMPLITUDE;
-    let grid_range = buffer * 2.0;
-
     let total_vertices = (points_x * points_y) as usize;
     let mut vertices = Vec::with_capacity(total_vertices);
 
-    let step_x = if points_x > 1 {
-        grid_range / (points_x - 1) as f32
-    } else {
-        0.0
-    };
-    let step_y = if points_y > 1 {
-        grid_range / (points_y - 1) as f32
-    } else {
-        0.0
-    };
-
     for j in 0..points_y {
-        let y = if points_y == 1 {
-            0.0
-        } else {
-            -buffer + (j as f32 * step_y)
-        };
+        let z = j as f32 * step_y + 0.1;
         for i in 0..points_x {
-            let x = if points_x == 1 {
-                0.0
-            } else {
-                -buffer + (i as f32 * step_x)
-            };
-            vertices.push(Vertex { position: [x, y] });
+            let x = i as f32 * step_x + 0.1;
+            vertices.push(Vertex {
+                position: [x, 0.0, z],
+            });
         }
     }
+
     Grid {
         data: vertices,
         width: points_x,

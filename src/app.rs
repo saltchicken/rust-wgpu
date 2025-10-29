@@ -35,9 +35,14 @@ impl ApplicationHandler for App {
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
 
         let (base_grid, num_output_vertices) = match self.args.command.as_ref() {
-            Some(InputCommand::Grid { points_x, points_y }) => {
+            Some(InputCommand::Grid {
+                points_x,
+                points_y,
+                step_x,
+                step_y,
+            }) => {
                 println!("Generating {}x{} grid", points_x, points_y);
-                let grid = create_vertex_grid(*points_x, *points_y);
+                let grid = create_vertex_grid(*points_x, *points_y, *step_x, *step_y);
                 let count = grid.as_flat_vec().len() as u32;
                 (grid, count)
             }
@@ -55,7 +60,7 @@ impl ApplicationHandler for App {
             }
             None => {
                 println!("No input command, defaulting to 50x50 grid");
-                let grid = create_vertex_grid(50, 50);
+                let grid = create_vertex_grid(50, 50, 0.1, 0.1);
                 let count = grid.as_flat_vec().len() as u32;
                 (grid, count)
             }
