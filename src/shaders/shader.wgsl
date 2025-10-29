@@ -88,5 +88,5 @@ fn vs_main(
 @fragment
 fn fs_main() -> @location(0) vec4<f32> {
     //let green = (sin(u_time.time * 2.0) + 1.0) * 0.5;
-    return vec4<f32>(0.0, 1.0, 1.0, 1.0);
+    return vec4<f32>(0.0, 0.01, 0.01, 1.0);
 }
