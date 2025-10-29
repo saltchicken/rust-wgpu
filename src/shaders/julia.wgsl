@@ -43,12 +43,12 @@ fn cs_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     var z = base_vertices[idx].position * 0.8;
 
     // 2. 'c' constant *defines* the shape
-    let t = u_time.time * 0.3;
-    let c = vec2<f32>(-0.4 + cos(t) * 0.25, 0.4 + sin(t) * 0.2);
+    let t = u_time.time * 0.7;
+    let c = vec2<f32>(-0.32 + cos(t) * 0.381, 0.4 + sin(t) * 0.203);
     // let c = vec2<f32>(-0.8, 0.156);
 
     // 3. Number of iterations to apply the transform.
-    let iterations = 50;
+    let iterations = 10;
 
     // 4. Apply the Julia iteration repeatedly.
     for (var i = 0; i < iterations; i = i + 1) {
@@ -86,5 +86,5 @@ fn vs_main(
 
 @fragment
 fn fs_main() -> @location(0) vec4<f32> {
-    return vec4<f32>(0.0, 1.0, 1.0, 1.0);
+    return vec4<f32>(0.0, 0.05, 0.05, 1.0);
 }
