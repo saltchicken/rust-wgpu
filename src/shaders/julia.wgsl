@@ -44,8 +44,8 @@ fn cs_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     // 2. 'c' constant *defines* the shape
     let t = u_time.time * 0.3;
-    // let c = vec2<f32>(-0.4, 0.4 + sin(t) * 0.2);
-    let c = vec2<f32>(-0.8, 0.156);
+    let c = vec2<f32>(-0.4 + cos(t) * 0.25, 0.4 + sin(t) * 0.2);
+    // let c = vec2<f32>(-0.8, 0.156);
 
     // 3. Number of iterations to apply the transform.
     let iterations = 50;
