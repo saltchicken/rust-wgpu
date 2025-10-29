@@ -32,6 +32,9 @@ enum ShaderChoice {
 
     #[value(name = "particle-shader")]
     ParticleShader,
+
+    #[value(name = "julia-spawner")]
+    JuliaSpawner,
 }
 
 impl ShaderChoice {
@@ -42,6 +45,7 @@ impl ShaderChoice {
             ShaderChoice::Shader => "shaders/shader.wgsl",
             ShaderChoice::Shader2 => "shaders/shader2.wgsl",
             ShaderChoice::ParticleShader => "shaders/particle_shader.wgsl",
+            ShaderChoice::JuliaSpawner => "shaders/julia_spawner.wgsl",
         }
     }
 }
@@ -60,12 +64,17 @@ enum InputCommand {
     /// Generate a single point
     Point {
         /// X coordinate
-        #[arg(short = 'x', long, default_value_t = 0.0)]
+        #[arg(short = 'x', long, default_value_t = 0.0, allow_hyphen_values = true)]
         x: f32,
         /// Y coordinate
-        #[arg(short = 'y', long, default_value_t = 0.0)]
+        #[arg(short = 'y', long, default_value_t = 0.0, allow_hyphen_values = true)]
         y: f32,
-        #[arg(short = 'n', long, default_value_t = 100000)]
+        #[arg(
+            short = 'n',
+            long,
+            default_value_t = 100000,
+            allow_hyphen_values = true
+        )]
         num_particles: u32,
     },
 }
