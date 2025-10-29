@@ -15,6 +15,12 @@ pub enum ShaderChoice {
     ParticleShader,
     #[value(name = "julia-spawner")]
     JuliaSpawner,
+    #[value(name = "spiral-fractal")]
+    SpiralFractal,
+    #[value(name = "julia-spiral-blend")]
+    JuliaSpiralBlend,
+    #[value(name = "spiral-spawner")]
+    SpiralSpawner,
 }
 
 impl ShaderChoice {
@@ -26,6 +32,9 @@ impl ShaderChoice {
             ShaderChoice::Shader2 => "shaders/shader2.wgsl",
             ShaderChoice::ParticleShader => "shaders/particle_shader.wgsl",
             ShaderChoice::JuliaSpawner => "shaders/julia_spawner.wgsl",
+            ShaderChoice::SpiralFractal => "shaders/spiral_fractal.wgsl",
+            ShaderChoice::JuliaSpiralBlend => "shaders/julia_spiral_blend.wgsl",
+            ShaderChoice::SpiralSpawner => "shaders/spiral_spawner.wgsl",
         }
     }
 }
