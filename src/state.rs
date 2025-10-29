@@ -11,6 +11,12 @@ struct TimeUniform {
     time: f32,
 }
 
+#[repr(C)]
+#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct DenoiseUniform {
+    factor: f32,
+}
+
 const COMPUTE_WORKGROUP_SIZE: u32 = 256;
 
 fn create_msaa_view(
@@ -34,6 +40,55 @@ fn create_msaa_view(
     });
     msaa_texture.create_view(&wgpu::TextureViewDescriptor::default())
 }
+
+fn create_msaa_view_with_format(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+    format: wgpu::TextureFormat,
+    sample_count: u32,
+) -> wgpu::TextureView {
+    let msaa_texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("MSAA Framebuffer"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    msaa_texture.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+fn create_feedback_texture(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+    format: wgpu::TextureFormat,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Feedback Texture"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
+}
+
 pub struct State {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
@@ -59,6 +114,26 @@ pub struct State {
     frame_count: u32,
     msaa_sample_count: u32,
     msaa_view: wgpu::TextureView,
+
+    // Feedback effect fields
+    denoise_factor: f32,
+    denoise_uniform: DenoiseUniform,
+    denoise_buffer: wgpu::Buffer,
+    denoise_bind_group: wgpu::BindGroup,
+    feedback_textures: [wgpu::Texture; 2],
+    feedback_texture_views: [wgpu::TextureView; 2],
+    texture_read_bind_group_layout: wgpu::BindGroupLayout,
+    feedback_read_bind_groups: [wgpu::BindGroup; 2],
+    points_texture: wgpu::Texture,
+    points_texture_view: wgpu::TextureView,
+    sampler: wgpu::Sampler,
+    feedback_pipeline: wgpu::RenderPipeline,
+    composite_pipeline: wgpu::RenderPipeline,
+    points_msaa_view: wgpu::TextureView,
+    frame_index: usize,
+    feedback_texture_format: wgpu::TextureFormat,
+    feedback_mix_bgl: wgpu::BindGroupLayout,
+    feedback_mix_bind_groups: [wgpu::BindGroup; 2],
 }
 
 impl State {
@@ -120,6 +195,8 @@ impl State {
         let msaa_sample_count = 4;
         let msaa_view = create_msaa_view(&device, &config, msaa_sample_count);
 
+        let feedback_texture_format = wgpu::TextureFormat::Rgba16Float;
+
         let start_time = Instant::now();
         let time_uniform = TimeUniform { time: 0.0 };
         let time_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -152,6 +229,341 @@ impl State {
             }],
             label: Some("time_bind_group"),
         });
+
+        // ‼️ --- Setup for Feedback Effect ---
+        // ‼️ 1. Create denoise uniform
+        let denoise_factor = 0.1;
+        let denoise_uniform = DenoiseUniform {
+            factor: denoise_factor,
+        };
+        let denoise_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Denoise Buffer"),
+            contents: bytemuck::cast_slice(&[denoise_uniform]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let denoise_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Denoise BGL"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+        let denoise_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Denoise BG"),
+            layout: &denoise_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: denoise_buffer.as_entire_binding(),
+            }],
+        });
+
+        // ‼️ 2. Create ping-pong textures, points texture, and sampler
+        let (ping_texture, ping_texture_view) = create_feedback_texture(
+            &device,
+            config.width,
+            config.height,
+            feedback_texture_format,
+        );
+        let (pong_texture, pong_texture_view) = create_feedback_texture(
+            &device,
+            config.width,
+            config.height,
+            feedback_texture_format,
+        );
+        let feedback_textures = [ping_texture, pong_texture];
+        let feedback_texture_views = [ping_texture_view, pong_texture_view];
+
+        let (points_texture, points_texture_view) = create_feedback_texture(
+            &device,
+            config.width,
+            config.height,
+            feedback_texture_format,
+        );
+
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Feedback Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
+        // ‼️ 3. Create BGL for reading a single texture (for composite pass)
+        let texture_read_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Texture Read BGL"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+
+        let feedback_read_bind_group_0 = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Feedback Read BG 0"),
+            layout: &texture_read_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&feedback_texture_views[0]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+        let feedback_read_bind_group_1 = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Feedback Read BG 1"),
+            layout: &texture_read_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&feedback_texture_views[1]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+        let feedback_read_bind_groups = [feedback_read_bind_group_0, feedback_read_bind_group_1];
+
+        // ‼️ 4. Create BGL and BGs for the *mix* pass
+        let feedback_mix_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Feedback Mix BGL"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    // t_old
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    // s_old
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    // t_points
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        let feedback_mix_bind_group_0 = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Feedback Mix BG 0"),
+            layout: &feedback_mix_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    // t_old = feedback_textures[0]
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&feedback_texture_views[0]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+                wgpu::BindGroupEntry {
+                    // t_points
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&points_texture_view),
+                },
+            ],
+        });
+        let feedback_mix_bind_group_1 = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Feedback Mix BG 1"),
+            layout: &feedback_mix_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    // t_old = feedback_textures[1]
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&feedback_texture_views[1]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+                wgpu::BindGroupEntry {
+                    // t_points
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&points_texture_view),
+                },
+            ],
+        });
+        let feedback_mix_bind_groups = [feedback_mix_bind_group_0, feedback_mix_bind_group_1];
+
+        // ‼️ 5. Create shaders for feedback and composite passes
+        let fs_quad_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Full-screen Quad VS"),
+            source: wgpu::ShaderSource::Wgsl(
+                r#"
+                struct VsOut {
+                    @builtin(position) clip_position: vec4<f32>,
+                    @location(0) uv: vec2<f32>,
+                }
+                @vertex
+                fn vs_main(@builtin(vertex_index) v_idx: u32) -> VsOut {
+                    var out: VsOut;
+                    let x = f32(i32(v_idx) % 2) * 2.0;
+                    let y = f32(i32(v_idx) / 2) * 2.0;
+                    out.clip_position = vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
+                    out.uv = vec2<f32>(x, y);
+                    return out;
+                }
+                "#
+                .into(),
+            ),
+        });
+
+        let feedback_fs_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Feedback Mix FS"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("feedback_shader.wgsl").into()),
+        });
+
+        let composite_fs_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Composite FS"),
+            source: wgpu::ShaderSource::Wgsl(
+                r#"
+                @group(0) @binding(0) var t_composite: texture_2d<f32>;
+                @group(0) @binding(1) var s_composite: sampler;
+                
+                struct VsOut {
+                    @builtin(position) clip_position: vec4<f32>,
+                    @location(0) uv: vec2<f32>,
+                }
+                @fragment
+                fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+                    return textureSample(t_composite, s_composite, in.uv);
+                }
+                "#
+                .into(),
+            ),
+        });
+
+        // ‼️ 6. Create feedback "mix" pipeline
+        let feedback_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Feedback Mix Pipeline Layout"),
+                bind_group_layouts: &[
+                    &feedback_mix_bgl,          // Group 0
+                    &denoise_bind_group_layout, // Group 1
+                ],
+                push_constant_ranges: &[],
+            });
+        let feedback_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Feedback Mix Pipeline"),
+            layout: Some(&feedback_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &fs_quad_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &feedback_fs_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: feedback_texture_format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(), // ‼️ No MSAA here
+            multiview: None,
+            cache: None,
+        });
+
+        // ‼️ 7. Create composite pipeline (draws final texture to screen)
+        let composite_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Composite Pipeline Layout"),
+                bind_group_layouts: &[&texture_read_bind_group_layout],
+                push_constant_ranges: &[],
+            });
+        let composite_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Composite Pipeline"),
+            layout: Some(&composite_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &fs_quad_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &composite_fs_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: config.format, // ‼️ This one draws to the screen
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState {
+                count: msaa_sample_count, // ‼️ This one uses screen MSAA
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview: None,
+            cache: None,
+        });
+
+        // ‼️ 8. Create off-screen MSAA buffer for points
+        let points_msaa_view = create_msaa_view_with_format(
+            &device,
+            config.width,
+            config.height,
+            feedback_texture_format,
+            msaa_sample_count,
+        );
 
         //  --- Create GPU Buffers ---
         let base_vertices_data = base_grid.as_flat_vec();
@@ -269,7 +681,7 @@ impl State {
                 module: &shader,
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
+                    format: feedback_texture_format,
                     // blend: Some(wgpu::BlendState::REPLACE),
                     blend: Some(wgpu::BlendState {
                         color: wgpu::BlendComponent {
@@ -330,6 +742,24 @@ impl State {
             msaa_view,
             last_update_time: Instant::now(),
             frame_count: 0,
+            denoise_factor,
+            denoise_uniform,
+            denoise_buffer,
+            denoise_bind_group,
+            feedback_textures,
+            feedback_texture_views,
+            texture_read_bind_group_layout,
+            feedback_read_bind_groups,
+            points_texture,
+            points_texture_view,
+            sampler,
+            feedback_pipeline,
+            composite_pipeline,
+            points_msaa_view,
+            frame_index: 0,
+            feedback_texture_format,
+            feedback_mix_bgl,
+            feedback_mix_bind_groups,
         })
     }
 
@@ -361,16 +791,123 @@ impl State {
             self.surface.configure(&self.device, &self.config);
             self.msaa_view = create_msaa_view(&self.device, &self.config, self.msaa_sample_count);
         }
+        //  --- Recreate Feedback Resources ---
+        let (ping_texture, ping_texture_view) =
+            create_feedback_texture(&self.device, width, height, self.feedback_texture_format);
+        let (pong_texture, pong_texture_view) =
+            create_feedback_texture(&self.device, width, height, self.feedback_texture_format);
+        self.feedback_textures = [ping_texture, pong_texture];
+        self.feedback_texture_views = [ping_texture_view, pong_texture_view];
+
+        // Recreate points texture
+        let (points_texture, points_texture_view) =
+            create_feedback_texture(&self.device, width, height, self.feedback_texture_format);
+        self.points_texture = points_texture;
+        self.points_texture_view = points_texture_view;
+
+        //  Recreate simple read BGs
+        let feedback_read_bind_group_0 =
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Feedback Read BG 0"),
+                layout: &self.texture_read_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(
+                            &self.feedback_texture_views[0],
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                ],
+            });
+        let feedback_read_bind_group_1 =
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Feedback Read BG 1"),
+                layout: &self.texture_read_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(
+                            &self.feedback_texture_views[1],
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                ],
+            });
+        self.feedback_read_bind_groups = [feedback_read_bind_group_0, feedback_read_bind_group_1];
+
+        //  Recreate mix BGs
+        let feedback_mix_bind_group_0 = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Feedback Mix BG 0"),
+            layout: &self.feedback_mix_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&self.feedback_texture_views[0]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&self.points_texture_view),
+                },
+            ],
+        });
+        let feedback_mix_bind_group_1 = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Feedback Mix BG 1"),
+            layout: &self.feedback_mix_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&self.feedback_texture_views[1]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&self.points_texture_view),
+                },
+            ],
+        });
+        self.feedback_mix_bind_groups = [feedback_mix_bind_group_0, feedback_mix_bind_group_1];
+
+        self.points_msaa_view = create_msaa_view_with_format(
+            &self.device,
+            self.config.width,
+            self.config.height,
+            self.feedback_texture_format,
+            self.msaa_sample_count,
+        );
     }
 
     pub fn handle_key(&mut self, event_loop: &ActiveEventLoop, key: KeyCode, pressed: bool) {
-        if key == KeyCode::Escape && pressed {
-            event_loop.exit();
+        if !pressed {
+            return;
         }
-        ////NOTE: This is just a random test
-        //if key == KeyCode::Space && pressed {
-        //    self.modify_base_vertex(25, 25, [f32::NAN, f32::NAN]);
-        //}
+        match key {
+            KeyCode::Escape => {
+                event_loop.exit();
+            }
+            KeyCode::ArrowUp => {
+                self.denoise_factor = (self.denoise_factor + 0.0025).min(1.0);
+                println!("Denoise Factor (Less Trail): {:.4}", self.denoise_factor);
+            }
+            KeyCode::ArrowDown => {
+                self.denoise_factor = (self.denoise_factor - 0.0025).max(0.0025);
+                println!("Denoise Factor (More Trail): {:.4}", self.denoise_factor);
+            }
+            _ => {}
+        }
     }
 
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -387,6 +924,14 @@ impl State {
             bytemuck::cast_slice(&[self.time_uniform]),
         );
 
+        // Update denoise
+        self.denoise_uniform.factor = self.denoise_factor;
+        self.queue.write_buffer(
+            &self.denoise_buffer,
+            0,
+            bytemuck::cast_slice(&[self.denoise_uniform]),
+        );
+
         let output = self.surface.get_current_texture()?;
         let view = output
             .texture
@@ -399,7 +944,7 @@ impl State {
             });
 
         {
-            //  --- Compute Pass ---
+            // --- Compute Pass ---
             let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Compute Pass"),
                 timestamp_writes: None,
@@ -407,40 +952,89 @@ impl State {
             compute_pass.set_pipeline(&self.compute_pipeline);
             compute_pass.set_bind_group(0, &self.time_bind_group, &[]);
             compute_pass.set_bind_group(1, &self.compute_bind_group, &[]);
-            // Calculate number of workgroups needed
             let workgroup_count_x =
                 (self.num_vertices as f32 / COMPUTE_WORKGROUP_SIZE as f32).ceil() as u32;
             compute_pass.dispatch_workgroups(workgroup_count_x, 1, 1);
         }
 
+        let read_index = self.frame_index;
+        let write_index = 1 - self.frame_index;
+
         {
-            // --- Render Pass ---
-            // Note: Using *same encoder*
+            //  --- Pass 1: Points Pass ---
+            //  Render the animated points to the off-screen "points_texture"
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Render Pass"),
+                label: Some("Points Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.msaa_view,
-                    resolve_target: Some(&view),
+                    view: &self.points_msaa_view,                    // Render to MSAA
+                    resolve_target: Some(&self.points_texture_view), // Resolve to points_texture
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Discard,
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), // Clear
+                        store: wgpu::StoreOp::Store, // Store the resolved texture
                     },
                     depth_slice: None,
                 })],
                 depth_stencil_attachment: None,
-                occlusion_query_set: None,
-                timestamp_writes: None,
+                ..Default::default()
             });
-
-            render_pass.set_pipeline(&self.render_pipeline);
+            render_pass.set_pipeline(&self.render_pipeline); // Use points pipeline
             render_pass.set_bind_group(0, &self.time_bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.draw(0..self.num_vertices, 0..1);
         }
 
-        // Submit both passes at once
+        //  --- Pass 2: Feedback Mix Pass ---
+        //  Mix old frame (from feedback_textures[read]) and new points (from points_texture)
+        //  and write the result to the new frame (feedback_textures[write])
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Feedback Mix Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.feedback_texture_views[write_index], // Write to new feedback tex
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load, // Don't care, will be overwritten
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                ..Default::default()
+            });
+            render_pass.set_pipeline(&self.feedback_pipeline); // Use MIX pipeline
+            render_pass.set_bind_group(0, &self.feedback_mix_bind_groups[read_index], &[]); // Read old
+            render_pass.set_bind_group(1, &self.denoise_bind_group, &[]);
+            render_pass.draw(0..3, 0..1);
+        }
+
+        //  --- Pass 3: Composite Pass ---
+        //  Draw the final mixed frame (feedback_textures[write]) to the screen
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Composite Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.msaa_view,       // Render to screen's MSAA
+                    resolve_target: Some(&view), // Resolve to screen
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), // Clear screen
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                ..Default::default()
+            });
+            render_pass.set_pipeline(&self.composite_pipeline);
+            render_pass.set_bind_group(0, &self.feedback_read_bind_groups[write_index], &[]); // Read new
+            render_pass.draw(0..3, 0..1);
+        }
+
+        // Submit all passes at once
         self.queue.submit(iter::once(encoder.finish()));
         output.present();
+
+        // Swap frames for next tick
+        self.frame_index = write_index;
 
         // ... (FPS counter remains the same) ...
         self.frame_count += 1;
