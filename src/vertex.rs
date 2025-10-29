@@ -88,6 +88,14 @@ impl<T: Clone> Clone for Grid<T> {
     }
 }
 
+pub fn create_single_point(pos: [f32; 2]) -> Grid<Vertex> {
+    Grid {
+        data: vec![Vertex { position: pos }],
+        width: 1,
+        height: 1,
+    }
+}
+
 pub fn create_vertex_grid(points_x: u32, points_y: u32) -> Grid<Vertex> {
     if points_x == 0 || points_y == 0 {
         return Grid {

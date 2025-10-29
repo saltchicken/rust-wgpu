@@ -65,6 +65,7 @@ impl State {
     pub async fn new(
         window: Arc<Window>,
         base_grid: Grid<Vertex>,
+        num_output_vertices: u32,
         shader_name: &str,
     ) -> anyhow::Result<State> {
         // ... (instance, surface, adapter, device, queue setup - no changes) ...
@@ -154,7 +155,6 @@ impl State {
 
         //  --- Create GPU Buffers ---
         let base_vertices_data = base_grid.as_flat_vec();
-        let num_vertices = base_vertices_data.len() as u32;
 
         // Create base vertex buffer (read-only for compute)
         let base_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -167,7 +167,8 @@ impl State {
         // Create animated vertex buffer (writable for compute, vertex for render)
         let animated_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Animated Vertex Buffer"),
-            size: (base_vertices_data.len() * std::mem::size_of::<Vertex>()) as wgpu::BufferAddress,
+            size: (num_output_vertices as usize * std::mem::size_of::<Vertex>())
+                as wgpu::BufferAddress,
             // Must be STORAGE (for compute output) and VERTEX (for render input)
             usage: wgpu::BufferUsages::VERTEX
                 | wgpu::BufferUsages::STORAGE
@@ -307,7 +308,7 @@ impl State {
             compute_pipeline,
             compute_bind_group,
 
-            num_vertices,
+            num_vertices: num_output_vertices,
             window,
             start_time,
             time_uniform,

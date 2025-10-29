@@ -1,4 +1,4 @@
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::sync::Arc;
 use winit::{
     application::ApplicationHandler,
@@ -13,7 +13,7 @@ mod state;
 use state::State;
 
 mod vertex;
-use vertex::create_vertex_grid;
+use vertex::{create_single_point, create_vertex_grid, Vertex};
 
 #[derive(ValueEnum, Clone, Debug, Default)]
 enum ShaderChoice {
@@ -29,6 +29,9 @@ enum ShaderChoice {
 
     #[value(name = "shader2")]
     Shader2,
+
+    #[value(name = "particle-shader")]
+    ParticleShader,
 }
 
 impl ShaderChoice {
@@ -38,25 +41,45 @@ impl ShaderChoice {
             ShaderChoice::Julia => "shaders/julia.wgsl",
             ShaderChoice::Shader => "shaders/shader.wgsl",
             ShaderChoice::Shader2 => "shaders/shader2.wgsl",
+            ShaderChoice::ParticleShader => "shaders/particle_shader.wgsl",
         }
     }
+}
+
+#[derive(Subcommand, Debug)]
+enum InputCommand {
+    /// Generate a grid of points (Default)
+    Grid {
+        /// Number of points on the X-axis
+        #[arg(short = 'x', long, default_value_t = 50)]
+        points_x: u32,
+        /// Number of points on the Y-axis
+        #[arg(short = 'y', long, default_value_t = 50)]
+        points_y: u32,
+    },
+    /// Generate a single point
+    Point {
+        /// X coordinate
+        #[arg(short = 'x', long, default_value_t = 0.0)]
+        x: f32,
+        /// Y coordinate
+        #[arg(short = 'y', long, default_value_t = 0.0)]
+        y: f32,
+        #[arg(short = 'n', long, default_value_t = 100000)]
+        num_particles: u32,
+    },
 }
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-    /// Path to the WGSL shader file
     #[arg(short, long, default_value = "affine-rotate")]
     shader_name: ShaderChoice,
 
-    /// Number of points on the X-axis
-    #[arg(short = 'x', long, default_value_t = 50)]
-    points_x: u32,
-
-    /// Number of points on the Y-axis
-    #[arg(short = 'y', long, default_value_t = 50)]
-    points_y: u32,
+    #[command(subcommand)]
+    command: Option<InputCommand>,
 }
+
 struct App {
     state: Option<State>,
     args: Args,
@@ -83,13 +106,43 @@ impl ApplicationHandler for App {
             .with_transparent(true);
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
 
-        let base_grid = create_vertex_grid(self.args.points_x, self.args.points_y);
+        // let base_grid = create_vertex_grid(self.args.points_x, self.args.points_y);
+        let (base_grid, num_output_vertices) = match self.args.command.as_ref() {
+            Some(InputCommand::Grid { points_x, points_y }) => {
+                println!("Generating {}x{} grid", points_x, points_y);
+                let grid = create_vertex_grid(*points_x, *points_y);
+                // For a grid, input count == output count
+                let count = grid.as_flat_vec().len() as u32;
+                (grid, count)
+            }
+            Some(InputCommand::Point {
+                x,
+                y,
+                num_particles,
+            }) => {
+                println!(
+                    "Generating single point emitter with {} particles",
+                    num_particles
+                );
+                let grid = create_single_point([*x, *y]);
+                // For a point, input count (1) != output count
+                (grid, *num_particles)
+            }
+            None => {
+                println!("No input command, defaulting to 50x50 grid");
+                let grid = create_vertex_grid(50, 50);
+                // Default is a grid
+                let count = grid.as_flat_vec().len() as u32;
+                (grid, count)
+            }
+        };
         println!("{}", self.args.shader_name.as_path());
 
         self.state = Some(
             pollster::block_on(State::new(
                 window,
                 base_grid,
+                num_output_vertices,
                 self.args.shader_name.as_path(),
             ))
             .unwrap(),
