@@ -42,8 +42,8 @@ pub struct State {
     is_surface_configured: bool,
     render_pipeline: wgpu::RenderPipeline,
 
-    base_grid: Grid<Vertex>,
-    base_vertex_buffer: wgpu::Buffer,
+    // base_grid: Grid<Vertex>,
+    // base_vertex_buffer: wgpu::Buffer,
     animated_vertex_buffer: wgpu::Buffer,
 
     compute_pipeline: wgpu::ComputePipeline,
@@ -314,8 +314,8 @@ impl State {
             is_surface_configured: size.width > 0 && size.height > 0,
             render_pipeline,
 
-            base_grid,
-            base_vertex_buffer,
+            // base_grid,
+            // base_vertex_buffer,
             animated_vertex_buffer,
             compute_pipeline,
             compute_bind_group,

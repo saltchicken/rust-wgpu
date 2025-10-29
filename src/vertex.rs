@@ -33,50 +33,50 @@ pub struct Grid<T> {
 }
 
 impl<T> Grid<T> {
-    pub fn get(&self, x: u32, y: u32) -> Option<&T> {
-        if x >= self.width || y >= self.height {
-            return None;
-        }
-        self.data.get((y * self.width + x) as usize)
-    }
-
-    pub fn get_mut(&mut self, x: u32, y: u32) -> Option<&mut T> {
-        if x >= self.width || y >= self.height {
-            return None;
-        }
-        self.data.get_mut((y * self.width + x) as usize)
-    }
-
-    pub fn width(&self) -> u32 {
-        self.width
-    }
-
-    pub fn height(&self) -> u32 {
-        self.height
-    }
+    // pub fn get(&self, x: u32, y: u32) -> Option<&T> {
+    //     if x >= self.width || y >= self.height {
+    //         return None;
+    //     }
+    //     self.data.get((y * self.width + x) as usize)
+    // }
+    //
+    // pub fn get_mut(&mut self, x: u32, y: u32) -> Option<&mut T> {
+    //     if x >= self.width || y >= self.height {
+    //         return None;
+    //     }
+    //     self.data.get_mut((y * self.width + x) as usize)
+    // }
+    //
+    // pub fn width(&self) -> u32 {
+    //     self.width
+    // }
+    //
+    // pub fn height(&self) -> u32 {
+    //     self.height
+    // }
 
     pub fn as_flat_vec(&self) -> &Vec<T> {
         &self.data
     }
 }
 
-impl Grid<Vertex> {
-    /// Updates a vertex on the CPU grid and returns the modified vertex
-    /// and its flat index for GPU synchronization.
-    pub fn update_vertex(&mut self, x: u32, y: u32, new_pos: [f32; 2]) -> Option<(Vertex, usize)> {
-        if x >= self.width || y >= self.height {
-            return None;
-        }
-        let index = (y * self.width + x) as usize;
-        if let Some(vertex) = self.data.get_mut(index) {
-            vertex.position = new_pos;
-            // Return a *copy* of the modified vertex and its index
-            Some((*vertex, index))
-        } else {
-            None
-        }
-    }
-}
+// impl Grid<Vertex> {
+//     /// Updates a vertex on the CPU grid and returns the modified vertex
+//     /// and its flat index for GPU synchronization.
+//     pub fn update_vertex(&mut self, x: u32, y: u32, new_pos: [f32; 2]) -> Option<(Vertex, usize)> {
+//         if x >= self.width || y >= self.height {
+//             return None;
+//         }
+//         let index = (y * self.width + x) as usize;
+//         if let Some(vertex) = self.data.get_mut(index) {
+//             vertex.position = new_pos;
+//             // Return a *copy* of the modified vertex and its index
+//             Some((*vertex, index))
+//         } else {
+//             None
+//         }
+//     }
+// }
 
 impl<T: Clone> Clone for Grid<T> {
     fn clone(&self) -> Self {
